@@ -18,9 +18,10 @@ import (
 )
 
 type Config struct {
-	Port        string `env:"PORT" envDefault:"8080"`
-	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://postgres:postgres@localhost:5432/subscription_reconciler?sslmode=disable"`
-	LogLevel    string `env:"LOG_LEVEL" envDefault:"info"`
+	Port            string `env:"PORT" envDefault:"8080"`
+	DatabaseURL     string `env:"DATABASE_URL" envDefault:"postgres://postgres:postgres@localhost:5432/subscription_reconciler?sslmode=disable"`
+	LogLevel        string `env:"LOG_LEVEL" envDefault:"info"`
+	MockCarrierMode bool   `env:"MOCK_CARRIER_MODE" envDefault:"false"`
 }
 
 func main() {
@@ -41,16 +42,6 @@ func main() {
 
 	logger.InfoContext(ctx, "starting API server", "port", cfg.Port, "database", cfg.DatabaseURL)
 
-	// Initialize database connection
-	db, err := postgres.Connect(ctx, cfg.DatabaseURL)
-	if err != nil {
-		logger.ErrorContext(ctx, "failed to connect to database", "err", err)
-		os.Exit(1)
-	}
-	defer db.Close()
-
-	logger.InfoContext(ctx, "connected to database")
-
 	// Set up HTTP router
 	router := chi.NewRouter()
 
@@ -65,9 +56,25 @@ func main() {
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.RequestID)
 
-	// Mount API routes
-	apiRouter := infrahttp.NewRouter(db, logger)
-	apiRouter.Mount(router)
+	// Handle Mock Carrier Mode
+	if cfg.MockCarrierMode {
+		logger.InfoContext(ctx, "running in mock carrier mode")
+		mockHandler := infrahttp.NewMockCarrierHandler(logger)
+		router.Get("/mock/carrier/plan", mockHandler.HandleGetPlan)
+	} else {
+		// Normal API mode requires DB
+		db, err := postgres.Connect(ctx, cfg.DatabaseURL)
+		if err != nil {
+			logger.ErrorContext(ctx, "failed to connect to database", "err", err)
+			os.Exit(1)
+		}
+		defer db.Close()
+		logger.InfoContext(ctx, "connected to database")
+
+		// Mount API routes
+		apiRouter := infrahttp.NewRouter(db, logger)
+		apiRouter.Mount(router)
+	}
 
 	// Create HTTP server
 	server := &http.Server{
