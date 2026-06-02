@@ -1,0 +1,15 @@
+version: "2"
+
+project:
+  name: "adora"
+  package_path: "github.com/example/adora/internal/infrastructure/postgres"
+
+sql:
+  - schema: "migrations"
+    queries: "sql/queries"
+    engine: "postgresql"
+    gen:
+      go:
+        out: "internal/infrastructure/postgres/gen"
+        emit_all_struct_pointers: true
+        emit_interface: true

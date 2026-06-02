@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.local
+.vscode
+.idea
+*.log
+logs/
+coverage.out
+bin/
+dist/
+postgres_data/
+.DS_Store
+*.md
+Makefile
