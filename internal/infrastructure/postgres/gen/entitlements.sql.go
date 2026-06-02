@@ -13,7 +13,7 @@ import (
 const getCarrierEntitlementsForPolling = `-- name: GetCarrierEntitlementsForPolling :many
 SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
 FROM user_entitlements
-WHERE source = 'CARRIER'
+WHERE source = 'CARRIER' AND active = TRUE
 ORDER BY carrier_polled_at ASC NULLS FIRST
 LIMIT $1
 FOR UPDATE SKIP LOCKED
