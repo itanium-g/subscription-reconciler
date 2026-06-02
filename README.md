@@ -95,10 +95,10 @@ graph TD
 
 ### Key Features
 
-- **Idempotency**: All external events are deduplicated via the `processed_events` table.
+- **Idempotency**: All external events are deduplicated via atomic constraints. `InsertStoreEvent` and `InsertMarketplaceRevocation` use `ON CONFLICT DO NOTHING` as an atomic gate to prevent race conditions.
 - **Timestamp-based Ordering**: `STORE` events are strictly ordered by `event_time_ms` (from the webhook payload), entirely ignoring arrival time.
-- **Late-Arriving Events**: Safely persisted for auditing but prevented from overwriting newer active states.
-- **Worker Concurrency**: Carrier polling employs PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
+- **Late-Arriving Events**: Safely persisted for auditing but prevented from overwriting newer active states without causing constraint violations.
+- **Worker Concurrency**: Carrier polling and Notification scheduling employ PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
 - **Notification Deduplication**: Database constraints strictly guarantee at most one expiration notification per user per day.
 
 ---
@@ -153,6 +153,19 @@ make run-worker
 ---
 
 ## API Endpoints
+
+### Health Check
+
+Verify the API is running and healthy.
+
+```http
+GET /health
+```
+
+**Response (200 OK):**
+```text
+OK
+```
 
 ### Store Webhook
 
@@ -276,7 +289,7 @@ curl -X POST http://localhost:8080/webhooks/marketplace/revoke \
 
 ### 4. Carrier Polling Mock
 
-Query the mock carrier to observe its randomized outputs:
+Query the mock carrier to observe its randomized outputs. (Note: The mock carrier runs on port 8081 as a lightweight container using `MOCK_CARRIER_MODE=true`).
 ```bash
 curl "http://localhost:8081/mock/carrier/plan?userId=user_carrier_1"
 ```
