@@ -24,6 +24,11 @@ type storeWebhookService struct {
 
 // ProcessStoreWebhook handles incoming store webhook events.
 // It implements idempotency, event ordering, and state reconciliation.
+//
+// Idempotency is enforced at the store_events level: InsertStoreEvent uses
+// ON CONFLICT (event_id) DO NOTHING, so concurrent duplicate deliveries are
+// safe — the second caller sees RowsAffected=0 and returns a duplicate
+// response without touching entitlement state.
 func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *domain.StoreWebhookPayload) (*domain.StoreWebhookResponse, error) {
 	// Step 1: Validate input
 	if err := payload.Validate(); err != nil {
@@ -35,14 +40,15 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 		}, err
 	}
 
-	// Step 2: Check if already processed (idempotency)
-	isProcessed, err := s.db.IsEventProcessed(ctx, payload.EventID, "STORE")
+	// Step 2: Atomically insert event (idempotency gate).
+	// ON CONFLICT (event_id) DO NOTHING ensures concurrent duplicates are safe.
+	inserted, err := s.db.InsertStoreEvent(ctx, payload.EventID, payload.UserID, payload.Type, payload.EventTimeMs, &payload.ProductID)
 	if err != nil {
 		return nil, err
 	}
 
-	if isProcessed {
-		// Already processed, return success with isDuplicate flag
+	if !inserted {
+		// Duplicate event — already in store_events.
 		return &domain.StoreWebhookResponse{
 			EventID:     payload.EventID,
 			UserID:      payload.UserID,
@@ -52,34 +58,25 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 		}, nil
 	}
 
-	// Step 3: Store the event (immutable history)
-	if err := s.db.InsertStoreEvent(ctx, payload.EventID, payload.UserID, payload.Type, payload.EventTimeMs, &payload.ProductID); err != nil {
-		return nil, err
-	}
-
-	// Step 4: Calculate new entitlement state based on event type
+	// Step 3: Calculate new entitlement state based on event type
 	active, expiresAt, reason := s.computeStateTransition(payload.Type, payload.EventTimeMs)
 
-	// Step 5: Upsert entitlement state for STORE source.
-	// The DB enforces ordering atomically: ON CONFLICT DO UPDATE WHERE
-	// last_event_time < EXCLUDED.last_event_time. Late-arriving events are
-	// stored in store_events but their state change is silently ignored by
-	// the DB if a newer event already owns the projection.
-	if err := s.db.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs, &payload.EventID); err != nil {
+	// Step 4: Upsert entitlement state for STORE source.
+	// Returns false if a newer event already owns the projection (late arrival).
+	stateChanged, err := s.db.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs, &payload.EventID)
+	if err != nil {
 		return nil, err
 	}
 
-	// Step 6: Schedule expiration notification for 24 hours before expiry.
-	// Always schedule when we have an active grant with an expiry date.
-	// If scheduled_for falls in the past (late-arriving event), the worker
-	// picks it up on its next tick. The DB unique index on
-	// (user_id, type, DATE(scheduled_for)) prevents duplicate rows.
-	if active && expiresAt != nil {
+	// Step 5: Schedule expiration notification only when state actually changed
+	// to an active grant with an expiry date. Prevents scheduling spurious
+	// notifications for late-arriving events whose upsert was skipped.
+	if stateChanged && active && expiresAt != nil {
 		notifyAt := expiresAt.Add(-24 * time.Hour)
 		_ = s.db.ScheduleNotification(ctx, payload.UserID, "PREMIUM_EXPIRES_SOON", notifyAt)
 	}
 
-	// Step 7: Mark event as processed (idempotency)
+	// Step 6: Mark event as processed (belt-and-suspenders idempotency)
 	if err := s.db.MarkEventProcessed(ctx, payload.EventID, "STORE"); err != nil {
 		return nil, err
 	}

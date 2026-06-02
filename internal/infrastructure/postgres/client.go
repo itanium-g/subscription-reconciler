@@ -74,10 +74,10 @@ func (c *Client) GetEntitlementsByUser(ctx context.Context, userID string) ([]En
 	return out, nil
 }
 
-func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) error {
+func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback()
 
@@ -93,7 +93,7 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 		Source: source,
 	})
 	if err != nil && err != sql.ErrNoRows {
-		return err
+		return false, err
 	}
 	if err == nil {
 		ent := entitlementFromGen(row)
@@ -104,7 +104,7 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 
 	// 2. If new event is not newer than existing, skip update
 	if err == nil && lastEventTime <= existingLastEventTime {
-		return nil
+		return false, nil
 	}
 
 	// 3. Perform upsert
@@ -117,7 +117,7 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 		LastEventTime: lastEventTime,
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// 4. Insert audit log
@@ -132,10 +132,13 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 		Reason:            nullString(reason),
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *Client) UpdateEntitlementCarrierPolledAt(ctx context.Context, userID string, source string) error {
@@ -211,14 +214,22 @@ func (c *Client) GetCarrierEntitlementsForPolling(ctx context.Context, limit int
 // StoreEventRepository
 // ---------------------------------------------------------------------------
 
-func (c *Client) InsertStoreEvent(ctx context.Context, eventID string, userID string, eventType string, eventTimeMs int64, productID *string) error {
-	return c.queries.InsertStoreEvent(ctx, gen.InsertStoreEventParams{
+func (c *Client) InsertStoreEvent(ctx context.Context, eventID string, userID string, eventType string, eventTimeMs int64, productID *string) (bool, error) {
+	result, err := c.queries.InsertStoreEvent(ctx, gen.InsertStoreEventParams{
 		EventID:     eventID,
 		UserID:      userID,
 		Type:        eventType,
 		EventTimeMs: eventTimeMs,
 		ProductID:   nullString(productID),
 	})
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 func (c *Client) GetStoreEventsByUser(ctx context.Context, userID string) ([]StoreEvent, error) {

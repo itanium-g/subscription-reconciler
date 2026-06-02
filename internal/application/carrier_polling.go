@@ -52,7 +52,7 @@ func (s *carrierPollingService) PollCarriersForUsers(ctx context.Context, batchS
 		active := status == domain.CarrierStatusActive
 		reason := "CARRIER_POLL"
 
-		if err := s.db.UpsertEntitlement(ctx, ent.UserID, "CARRIER", active, nil, &reason, time.Now().UnixMilli(), nil); err != nil {
+		if _, err := s.db.UpsertEntitlement(ctx, ent.UserID, "CARRIER", active, nil, &reason, time.Now().UnixMilli(), nil); err != nil {
 			continue
 		}
 

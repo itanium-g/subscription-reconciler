@@ -71,7 +71,7 @@ type AuditLog struct {
 type EntitlementRepository interface {
 	GetEntitlementByUserAndSource(ctx context.Context, userID string, source string) (*Entitlement, error)
 	GetEntitlementsByUser(ctx context.Context, userID string) ([]Entitlement, error)
-	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) error
+	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error)
 	UpdateEntitlementCarrierPolledAt(ctx context.Context, userID string, source string) error
 	GetLastEventTimeFromStore(ctx context.Context, userID string) (int64, error)
 	GetEntitlementsExpiringWithin24h(ctx context.Context) ([]Entitlement, error)
@@ -80,7 +80,7 @@ type EntitlementRepository interface {
 
 // StoreEventRepository handles store event persistence.
 type StoreEventRepository interface {
-	InsertStoreEvent(ctx context.Context, eventID string, userID string, eventType string, eventTimeMs int64, productID *string) error
+	InsertStoreEvent(ctx context.Context, eventID string, userID string, eventType string, eventTimeMs int64, productID *string) (bool, error)
 	GetStoreEventsByUser(ctx context.Context, userID string) ([]StoreEvent, error)
 	GetStoreEventByID(ctx context.Context, eventID string) (*StoreEvent, error)
 }
