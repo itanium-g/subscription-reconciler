@@ -6,26 +6,70 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/example/adora/internal/infrastructure/worker"
 )
+
+type Config struct {
+	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://postgres:postgres@localhost:5432/adora?sslmode=disable"`
+	LogLevel    string `env:"LOG_LEVEL" envDefault:"info"`
+}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Load configuration
+	var cfg Config
+	if err := env.Parse(&cfg); err != nil {
+		panic(err)
+	}
+
 	// Logger setup
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: parseLevelFromString(cfg.LogLevel),
+	}))
 	slog.SetDefault(logger)
 
-	// TODO: Load configuration from environment
-	// TODO: Initialize database connection
-	// TODO: Set up background jobs (carrier polling, notification sender)
-	// TODO: Start job runner
+	logger.InfoContext(ctx, "starting worker", "database", cfg.DatabaseURL)
 
-	logger.InfoContext(ctx, "starting worker")
+	// Initialize database connection
+	db, err := postgres.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.ErrorContext(ctx, "failed to connect to database", "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
 
-	// Placeholder: just wait for signal
+	logger.InfoContext(ctx, "connected to database")
+
+	// Create workers
+	pollingWorker := worker.NewPollingWorker(db, logger)
+	notificationWorker := worker.NewNotificationWorker(db, logger)
+
+	// Run workers concurrently
+	go pollingWorker.StartCarrierPolling(ctx)
+	go notificationWorker.StartNotificationSending(ctx)
+
+	// Wait for context cancellation
 	<-ctx.Done()
 
 	logger.InfoContext(ctx, "worker stopped")
+}
+
+func parseLevelFromString(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }

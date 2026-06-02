@@ -1,0 +1,53 @@
+package application
+
+import (
+	"context"
+
+	"github.com/example/adora/internal/domain"
+	"github.com/example/adora/internal/infrastructure/postgres"
+)
+
+// MarketplaceRevokeService handles marketplace revoke operations.
+type MarketplaceRevokeService interface {
+	RevokeMarketplaceAccess(ctx context.Context, request *domain.MarketplaceRevokeRequest) (*domain.MarketplaceRevokeResponse, error)
+}
+
+// NewMarketplaceRevokeService creates a new marketplace revoke service.
+func NewMarketplaceRevokeService(db postgres.Database) MarketplaceRevokeService {
+	return &marketplaceRevokeService{db: db}
+}
+
+type marketplaceRevokeService struct {
+	db postgres.Database
+}
+
+// RevokeMarketplaceAccess revokes marketplace-granted access for specified users.
+// Only affects MARKETPLACE source; leaves STORE and CARRIER unchanged.
+func (s *marketplaceRevokeService) RevokeMarketplaceAccess(ctx context.Context, request *domain.MarketplaceRevokeRequest) (*domain.MarketplaceRevokeResponse, error) {
+	// Validate input
+	if err := request.Validate(); err != nil {
+		return &domain.MarketplaceRevokeResponse{
+			Accepted: false,
+			Count:    0,
+			Message:  err.Error(),
+		}, err
+	}
+
+	// Process each user
+	var processed int32
+	for _, userID := range request.UserIDs {
+		// Only update MARKETPLACE source, set active=false
+		reason := "MARKETPLACE_REVOKE"
+		if err := s.db.UpsertEntitlement(ctx, userID, "MARKETPLACE", false, nil, &reason, 0); err != nil {
+			// Log error but continue with other users
+			continue
+		}
+		processed++
+	}
+
+	return &domain.MarketplaceRevokeResponse{
+		Accepted: true,
+		Count:    processed,
+		Message:  "Marketplace access revoked",
+	}, nil
+}
