@@ -323,13 +323,25 @@ func (c *Client) ScheduleNotification(ctx context.Context, userID string, notifi
 }
 
 func (c *Client) GetDueNotifications(ctx context.Context, limit int32) ([]Notification, error) {
-	rows, err := c.queries.GetDueNotifications(ctx, limit)
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	q := c.queries.WithTx(tx)
+
+	rows, err := q.GetDueNotifications(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Notification, len(rows))
 	for i, r := range rows {
 		out[i] = notificationFromGen(r)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
