@@ -257,11 +257,19 @@ func (c *Client) GetStoreEventByID(ctx context.Context, eventID string) (*StoreE
 // MarketplaceRevocationRepository
 // ---------------------------------------------------------------------------
 
-func (c *Client) InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) error {
-	return c.queries.InsertMarketplaceRevocation(ctx, gen.InsertMarketplaceRevocationParams{
+func (c *Client) InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) (bool, error) {
+	result, err := c.queries.InsertMarketplaceRevocation(ctx, gen.InsertMarketplaceRevocationParams{
 		EventID: eventID,
 		UserID:  userID,
 	})
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 func (c *Client) GetMarketplaceRevocationByEventID(ctx context.Context, eventID string) (*MarketplaceRevocation, error) {

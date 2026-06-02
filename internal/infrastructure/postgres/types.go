@@ -87,7 +87,7 @@ type StoreEventRepository interface {
 
 // MarketplaceRevocationRepository handles marketplace revocation persistence.
 type MarketplaceRevocationRepository interface {
-	InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) error
+	InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) (bool, error)
 	GetMarketplaceRevocationByEventID(ctx context.Context, eventID string) (*MarketplaceRevocation, error)
 }
 

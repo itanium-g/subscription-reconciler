@@ -282,7 +282,7 @@ func TestMarketplaceIsolation(t *testing.T) {
 	require.NoError(t, err)
 
 	// 2. Grant MARKETPLACE entitlement (active)
-	err = testDB.UpsertEntitlement(ctx, userID, "MARKETPLACE", true, nil, nil, now, nil)
+	_, err = testDB.UpsertEntitlement(ctx, userID, "MARKETPLACE", true, nil, nil, now, nil)
 	require.NoError(t, err)
 
 	// 3. Revoke MARKETPLACE entitlement
@@ -343,7 +343,7 @@ func TestCarrierInactiveHandling(t *testing.T) {
 	now := time.Now().UnixMilli()
 
 	// 1. Setup active carrier entitlement
-	err := testDB.UpsertEntitlement(ctx, userID, "CARRIER", true, nil, nil, now, nil)
+	_, err := testDB.UpsertEntitlement(ctx, userID, "CARRIER", true, nil, nil, now, nil)
 	require.NoError(t, err)
 
 	// 2. Setup mock client to return inactive
@@ -375,7 +375,7 @@ func TestCarrierAPIErrorHandling(t *testing.T) {
 	now := time.Now().UnixMilli()
 
 	// 1. Setup active carrier entitlement
-	err := testDB.UpsertEntitlement(ctx, userID, "CARRIER", true, nil, nil, now, nil)
+	_, err := testDB.UpsertEntitlement(ctx, userID, "CARRIER", true, nil, nil, now, nil)
 	require.NoError(t, err)
 
 	// 2. Setup mock client to return error
@@ -440,7 +440,7 @@ func TestConcurrentCarrierWorkers(t *testing.T) {
 		"cc_user_11", "cc_user_12", "cc_user_13", "cc_user_14", "cc_user_15",
 	}
 	for _, u := range userIDs {
-		err := testDB.UpsertEntitlement(ctx, u, "CARRIER", true, nil, nil, now, nil)
+		_, err := testDB.UpsertEntitlement(ctx, u, "CARRIER", true, nil, nil, now, nil)
 		require.NoError(t, err)
 	}
 
@@ -472,6 +472,6 @@ func TestConcurrentCarrierWorkers(t *testing.T) {
 // Helper function for creating test data
 func createTestEntitlement(t *testing.T, db postgres.Database, ctx context.Context, userID string, source string, active bool) {
 	t.Helper()
-	err := db.UpsertEntitlement(ctx, userID, source, active, nil, nil, time.Now().UnixMilli(), nil)
+	_, err := db.UpsertEntitlement(ctx, userID, source, active, nil, nil, time.Now().UnixMilli(), nil)
 	require.NoError(t, err)
 }
