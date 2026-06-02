@@ -1,17 +1,24 @@
 # Premium Entitlement Reconciler
 
-A backend service that reconciles premium subscriptions from three independent sales channels (in-app store, mobile carrier, third-party marketplace) into a single canonical entitlement state.
+[![Go Version](https://img.shields.io/badge/Go-1.26.3-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18.4-336791?style=flat&logo=postgresql)](https://www.postgresql.org/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)](https://www.docker.com/)
+
+A robust backend service designed to reconcile premium subscriptions from three independent sales channels (in-app store, mobile carrier, and a third-party marketplace) into a single, canonical entitlement state.
 
 ## Problem Statement
 
-Premium access can be granted or revoked by any of three channels:
-1. **In-app store**: Pushes webhooks (at-least-once, unordered, may arrive late)
-2. **Mobile carrier**: No webhooks; must poll API on schedule
-3. **Third-party marketplace**: Pushes bulk revoke requests once per month
+Premium access for a user can be granted or revoked concurrently by any of three distinct channels:
+1. **In-app store**: Pushes webhooks (guarantees at-least-once delivery, unordered, and events may occasionally arrive days late).
+2. **Mobile carrier**: Does not support webhooks; requires schedule-based API polling to ascertain plan status.
+3. **Third-party marketplace**: Pushes a bulk revocation request once per month.
 
-The service maintains the canonical truth: "Is this user premium right now, and why?"
+The core responsibility of this service is to ingest these disparate signals and maintain the canonical truth to accurately answer: *"Is this user premium right now, and why?"*
 
 ## Architecture
+
+> [!NOTE]
+> The service utilizes a **hybrid event model** where immutable event history is paired with a mutable canonical projection for high-performance reads.
 
 ```mermaid
 graph TD
@@ -79,20 +86,22 @@ graph TD
 
 ### Design Principles
 
-- **Hybrid event model**: Immutable event history + mutable canonical projection
-  - `store_events`, `marketplace_revocations`, `processed_events`: Never modified
-  - `user_entitlements`: Current state per source (fast reads)
-- **Multiple simultaneous sources**: A user can be active via STORE and inactive via MARKETPLACE simultaneously
-- **Source isolation**: Marketplace revoke only affects MARKETPLACE source; carrier polling only affects CARRIER
-- **Deterministic priority**: API returns single source using priority: STORE > CARRIER > MARKETPLACE > NONE
+- **Hybrid Event Model**: Immutable event history combined with a mutable canonical projection.
+  - `store_events`, `marketplace_revocations`, `processed_events`: Insert-only (never modified).
+  - `user_entitlements`: Fast-read projection representing current state per source.
+- **Multiple Simultaneous Sources**: A user can simultaneously be active via `STORE` and inactive via `MARKETPLACE`.
+- **Source Isolation**: A marketplace revocation exclusively affects the `MARKETPLACE` source; carrier polling exclusively affects the `CARRIER` source.
+- **Deterministic Priority**: The API returns a single canonical source using the priority: `STORE > CARRIER > MARKETPLACE > NONE`.
 
 ### Key Features
 
-- **Idempotency**: All external events deduplicated via `processed_events` table
-- **Timestamp-based ordering**: STORE events ordered by `event_time_ms` (webhook payload), not arrival time
-- **Late-arriving events**: Persisted but don't overwrite newer state
-- **Worker concurrency**: Carrier polling uses `FOR UPDATE SKIP LOCKED` for safe concurrent workers
-- **Notification deduplication**: Database constraints guarantee at most one expiration notification per user per day
+- **Idempotency**: All external events are deduplicated via the `processed_events` table.
+- **Timestamp-based Ordering**: `STORE` events are strictly ordered by `event_time_ms` (from the webhook payload), entirely ignoring arrival time.
+- **Late-Arriving Events**: Safely persisted for auditing but prevented from overwriting newer active states.
+- **Worker Concurrency**: Carrier polling employs PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
+- **Notification Deduplication**: Database constraints strictly guarantee at most one expiration notification per user per day.
+
+---
 
 ## Quick Start
 
@@ -103,17 +112,23 @@ graph TD
 
 ### Run Everything
 
+Spin up the entire stack with a single command:
+
 ```bash
-docker compose up
+docker compose up -d
 ```
 
 This starts:
-- PostgreSQL database
-- API server (http://localhost:8080)
-- Background worker (carrier polling)
-- Mock carrier API (http://localhost:8081)
+- PostgreSQL 18.4 Database
+- API Server (`http://localhost:8080`)
+- Background Worker (Carrier Polling & Notifications)
+- Mock Carrier API (`http://localhost:8081`)
+- Database Migration Utility (`migrate/migrate`)
 
 ### Local Development
+
+> [!TIP]
+> Ensure a local PostgreSQL instance is running before starting the API or worker manually.
 
 ```bash
 # Install dependencies
@@ -122,22 +137,26 @@ go mod download
 # Run linter
 make lint
 
-# Run tests
+# Run integration tests
 make test
 
 # Build binaries
 make build
 
-# Run API locally (requires PostgreSQL running)
+# Run API locally
 make run-api
 
-# Run worker locally (requires PostgreSQL running)
+# Run worker locally
 make run-worker
 ```
+
+---
 
 ## API Endpoints
 
 ### Store Webhook
+
+Ingest an event from the in-app store. 
 
 ```http
 POST /webhooks/store
@@ -146,18 +165,18 @@ Content-Type: application/json
 {
   "eventId": "evt_abc123",
   "userId": "u_42",
-  "type": "INITIAL_PURCHASE|RENEWAL|CANCELLATION|BILLING_ISSUE|EXPIRATION|UN_CANCELLATION",
+  "type": "INITIAL_PURCHASE",
   "eventTimeMs": 1716700000000,
   "productId": "premium_monthly"
 }
 ```
 
-Handles:
-- Duplicate events (idempotent)
-- Out-of-order delivery
-- Late arrivals (only overwrites if timestamp is newer)
+> [!IMPORTANT]
+> Handles duplicate events idempotently, safely reorders out-of-order deliveries, and accepts late arrivals without mutating newer state.
 
 ### Marketplace Revoke
+
+Revoke marketplace-granted access in bulk.
 
 ```http
 POST /webhooks/marketplace/revoke
@@ -168,44 +187,43 @@ Content-Type: application/json
 }
 ```
 
-Only revokes marketplace-granted access; leaves STORE and CARRIER unchanged.
-
 ### Get User Entitlement
+
+Fetch the canonical entitlement state.
 
 ```http
 GET /users/{userId}/entitlement
 ```
 
-Response:
-
+**Response:**
 ```json
 {
   "active": true,
-  "source": "STORE|CARRIER|MARKETPLACE|NONE",
+  "source": "STORE",
   "expiresAt": "2026-06-10T00:00:00Z",
   "lastChangedAt": "2026-05-20T11:23:00Z",
   "reason": "RENEWAL"
 }
 ```
+*Note: Returns the highest-priority active source (`STORE > CARRIER > MARKETPLACE`).*
 
-**Response priority**: Returns the highest-priority active source (STORE > CARRIER > MARKETPLACE). If multiple sources are active, the highest-priority one is returned.
+### Timeline (Stretch Goal)
 
-### Timeline (Stretch)
+Fetch the reconstructed history of entitlement changes for a specific user.
 
 ```http
 GET /users/{userId}/timeline
 ```
 
-Returns reconstructed history of entitlement changes from audit log (requires stretch implementation).
+---
 
-## Testing with curl
+## Testing with cURL
 
-Once the application is running, you can test its core and stretch functionality using the following `curl` command examples:
+Once the application is running via Docker Compose, verify the functionality with the following shell commands.
 
-### 1. In-App Store Webhooks (`POST /webhooks/store`)
+### 1. In-App Store Webhooks
 
 **Initial Purchase (Active)**
-Grant premium access to `user_store_1` starting now:
 ```bash
 TIMESTAMP=$(( $(date +%s) * 1000 ))
 
@@ -221,22 +239,10 @@ curl -X POST http://localhost:8080/webhooks/store \
 ```
 
 **Duplicate Event Ingestion (Idempotency)**
-Send the exact same request again to test idempotency:
-```bash
-curl -X POST http://localhost:8080/webhooks/store \
-  -H "Content-Type: application/json" \
-  -d '{
-    "eventId": "evt_store_purchase_001",
-    "userId": "user_store_1",
-    "type": "INITIAL_PURCHASE",
-    "eventTimeMs": '$TIMESTAMP',
-    "productId": "premium_monthly"
-  }'
-```
-*(Should return `isDuplicate: true`)*
+Run the same command above again. It will return `"isDuplicate": true`.
 
 **Out-of-Order / Late-Arriving Event**
-Simulate a late-arriving event by calculating a timestamp in the past (e.g. 20 seconds ago) and sending a `BILLING_ISSUE` (which cancels access) after the active purchase:
+Simulate a late-arriving event (e.g., 20 seconds in the past):
 ```bash
 TIMESTAMP=$(( ($(date +%s) - 20) * 1000 ))
 
@@ -250,18 +256,16 @@ curl -X POST http://localhost:8080/webhooks/store \
     "productId": "premium_monthly"
   }'
 ```
-*(Will be accepted for logging but will not overwrite the active purchase status since it is timestamped earlier)*
+*(Accepted for logging but will not overwrite the active purchase status.)*
 
-### 2. Entitlement Queries (`GET /users/:id/entitlement`)
+### 2. Entitlement Queries
 
-Retrieve the current canonical entitlement for a user:
 ```bash
 curl http://localhost:8080/users/user_store_1/entitlement
 ```
 
-### 3. Marketplace Bulk Revoke (`POST /webhooks/marketplace/revoke`)
+### 3. Marketplace Bulk Revoke
 
-Revoke marketplace corporate access bulk for a list of users:
 ```bash
 curl -X POST http://localhost:8080/webhooks/marketplace/revoke \
   -H "Content-Type: application/json" \
@@ -270,159 +274,65 @@ curl -X POST http://localhost:8080/webhooks/marketplace/revoke \
   }'
 ```
 
-### 4. Carrier Polling Mock (`GET /mock/carrier/plan`)
+### 4. Carrier Polling Mock
 
-Query the carrier mock endpoint to check its randomized output behavior:
+Query the mock carrier to observe its randomized outputs:
 ```bash
-curl "http://localhost:8080/mock/carrier/plan?userId=user_carrier_1"
+curl "http://localhost:8081/mock/carrier/plan?userId=user_carrier_1"
 ```
 
-### 5. Transition Timeline / Audit Trail (`GET /users/:id/timeline`)
+### 5. Transition Timeline / Audit Trail
 
-Query the reconstructed state transition history for a user:
 ```bash
 curl http://localhost:8080/users/user_store_1/timeline
 ```
 
-## Database Schema
-
-### Core Tables
-
-- **user_entitlements**: Current state per source (PK: user_id, source)
-- **store_events**: All store webhook events (immutable)
-- **marketplace_revocations**: All marketplace revoke events (immutable)
-- **processed_events**: Idempotency check (event_id UNIQUE)
-- **notifications**: Scheduled notifications (deduped by user_id, type, date)
-
-### Stretch Tables
-
-- **audit_logs**: Complete state transition history
+---
 
 ## Design Decisions
 
-### 1. Hybrid Event Model vs. Full Event Sourcing
+| Decision | Rationale |
+|----------|-----------|
+| **Hybrid Event Model** | A pure event-sourcing model requires costly state-rebuilding on reads. Using immutable tables (`store_events`, `audit_logs`) alongside a mutable projection (`user_entitlements`) perfectly balances absolute auditability with `O(log n)` query performance. |
+| **Composite PK on `user_entitlements`** | Allows seamless tracking of multiple simultaneous sources. A user can easily be `active` via STORE and `inactive` via MARKETPLACE without destructive updates. |
+| **Deterministic Priority** | The API is forced to return a single source. `STORE > CARRIER > MARKETPLACE > NONE` provides a deterministic resolution to overlapping active entitlements. |
+| **Ordering via `event_time_ms`** | In-app store webhooks offer no ordering guarantees. By strictly applying state changes based on payload timestamps (rather than arrival), late-arriving events naturally do not corrupt newer data. |
+| **Worker Concurrency** | PostgreSQL's `FOR UPDATE SKIP LOCKED` allows multiple polling workers to safely pull independent user batches simultaneously without blocking or double-polling. |
+| **Notification Deduplication** | Leveraging `ON CONFLICT DO NOTHING` alongside an `IMMUTABLE` functional index ensures that deduplication logic is atomic and race-condition free at the database level. |
 
-**Decision**: Hybrid model (immutable history + mutable projection)
-
-**Why**: 
-- Immutable history provides auditability and debugging
-- Mutable projection in `user_entitlements` enables fast reads
-- Avoids overhead of replaying all events on every query
-- Pragmatic balance between auditability and performance
-
-### 2. Multiple Simultaneous Sources
-
-**Decision**: `user_entitlements` has composite key `(user_id, source)`
-
-**Why**:
-- Allows independent source tracking
-- Marketplace revoke naturally only affects MARKETPLACE rows
-- Carrier polling naturally only affects CARRIER rows
-- Reflects assignment requirement: "only marketplace-granted access should be revoked"
-
-### 3. Single Source in API Response
-
-**Decision**: Deterministic priority (STORE > CARRIER > MARKETPLACE > NONE)
-
-**Why**:
-- Assignment requires single source in response
-- Priority is deterministic and documented
-- Clients have clear, unambiguous contract
-- Avoids race conditions in multi-source selection
-
-### 4. Event Ordering (STORE Only)
-
-**Decision**: Use `event_time_ms` from webhook; late events persist but don't overwrite
-
-**Why**:
-- STORE webhooks have "no ordering guarantee"
-- `event_time_ms` is the system's source of truth for causality
-- Late arrivals are persisted for audit
-- Newer (by timestamp) state always "wins"
-- CARRIER and MARKETPLACE don't need ordering (polling + bulk revoke)
-
-### 5. Worker Concurrency (Carrier Polling)
-
-**Decision**: `FOR UPDATE SKIP LOCKED` for row-level locking
-
-**Why**:
-- PostgreSQL native, no external lock service required
-- Efficient: workers skip claimed rows, don't block
-- Simple: SQL handles all coordination
-- Safe: no double-polling of same user
-
-### 6. Notification Deduplication
-
-**Decision**: Database constraints `INSERT ... ON CONFLICT DO NOTHING`
-
-**Why**:
-- No race conditions (database enforces atomically)
-- Cheaper than application-level logic
-- Consistent with PostgreSQL best practices
-- Trivial to reason about
-
-## Testing
-
-Integration tests use PostgreSQL Testcontainers for real database behavior.
-
-**Coverage priorities**:
-- Duplicate store events
-- Out-of-order events
-- Late-arriving events
-- Marketplace isolation (only revokes MARKETPLACE source)
-- Carrier inactive/error handling
-- Notification deduplication
-- Concurrent worker safety
-
-Run tests:
-
-```bash
-make test
-```
+---
 
 ## Tradeoffs & Production Considerations
 
-### What Would Change with Another Week
+### What Would Change with Another Week?
 
-1. **Richer audit trail**: Detailed audit logs on every state change
-2. **Metrics & observability**: Prometheus metrics (reconciliation latency, error rates)
-3. **Webhook retry logic**: Backoff strategy for failed webhooks
-4. **Carrier API caching**: Cache recent responses to reduce load
-5. **Bulk operations**: Batch notification sends, batch carrier polls
-6. **Rate limiting**: Per-user rate limits on webhook ingestion
-7. **Request signing**: Verify HMAC signatures on marketplace webhooks
+1. **Richer Observability**: Integration with OpenTelemetry (Prometheus/Grafana) to monitor reconciliation latency, webhook queue depths, and error rates.
+2. **Webhook Retry Logic**: Implement an exponential backoff retry strategy for failed webhooks to ensure eventual consistency.
+3. **Carrier API Caching**: Cache recent carrier responses to heavily reduce outbound load during bulk worker polling.
+4. **Rate Limiting**: Defend the webhook ingestion routes with per-user and global rate limiting.
+5. **Payload Verification**: Introduce HMAC signature verification middleware for marketplace webhooks to guarantee authenticity.
+
+---
 
 ## Project Structure
 
-```
+```text
 .
 ├── cmd/
-│   ├── api/                   # API server
-│   └── worker/                # Background job runner
+│   ├── api/                   # API server entrypoint
+│   └── worker/                # Background job runner entrypoint
 ├── internal/
-│   ├── domain/                # Domain types (Entitlement, Event, etc.)
-│   ├── application/           # Service layer (reconciliation logic)
-│   ├── infrastructure/
-│   │   ├── postgres/          # Repository implementations
-│   │   ├── http/              # HTTP handlers
-│   │   └── worker/            # Job implementations
-├── migrations/                # SQL migrations
+│   ├── application/           # Service layer & reconciliation business logic
+│   ├── domain/                # Domain entities & types
+│   └── infrastructure/
+│       ├── http/              # HTTP routers and handlers
+│       ├── postgres/          # SQL repository implementations
+│       └── worker/            # Job polling implementations
+├── migrations/                # Database migrations
 ├── sql/
-│   └── queries/               # sqlc query files
-├── openapi/                   # OpenAPI 3.1 spec
-├── tests/                     # Integration tests
-├── Makefile
-├── docker-compose.yml
-├── Dockerfile
-├── go.mod
-├── go.sum
-└── README.md
+│   └── queries/               # sqlc raw query templates
+├── tests/                     # Integration tests (Testcontainers)
+├── Makefile                   # Build/Dev shortcuts
+├── docker-compose.yml         # Container orchestration
+└── Dockerfile                 # Multi-stage build definitions
 ```
-
-## Contributing
-
-- Use `make fmt` to format code
-- Use `make lint` to check for issues
-- Use `make test` to run tests
-- Commit frequently with clear messages
-- Each phase ends with a reviewable commit

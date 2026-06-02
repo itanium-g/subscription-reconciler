@@ -1,129 +1,97 @@
 # SQL Queries for sqlc
 
-This directory contains SQL queries that are compiled by `sqlc` into type-safe Go code.
+This directory contains raw SQL queries configured for consumption by [`sqlc`](https://docs.sqlc.dev/). `sqlc` compiles these queries into highly-optimized, type-safe Go code.
 
 ## Query Syntax
 
-Each query file follows sqlc conventions:
+Each file follows strict `sqlc` annotation conventions:
 
 ```sql
 -- name: FunctionName :one
-SELECT ... WHERE id = $1;
+SELECT * FROM table_name WHERE id = $1;
 ```
 
-Query modifiers:
-- `:one` — returns single row or error (query must use `LIMIT 1`)
-- `:many` — returns slice of rows or error
-- `:exec` — executes without returning rows (INSERT, UPDATE, DELETE)
+**Query Modifiers**:
+- `:one` — Expects exactly one row (or throws an error). Standardize queries with `LIMIT 1`.
+- `:many` — Returns a slice of rows.
+- `:exec` — Executes without returning rows (e.g., `INSERT`, `UPDATE`, `DELETE`).
+- `:execrows` — Executes and returns the number of rows affected.
 
-## Files
+---
 
-### entitlements.sql
-Queries for user entitlements (canonical state per source):
-- `GetEntitlementByUserAndSource` — fetch single entitlement
-- `GetEntitlementsByUser` — fetch all sources for a user
-- `UpsertEntitlement` — insert or update entitlement state
-- `UpdateEntitlementCarrierPolledAt` — update carrier polling timestamp
-- `GetLastEventTimeFromStore` — get ordering timestamp for store events
-- `GetEntitlementsExpiringWithin24h` — find expiring entitlements for notifications
-- `GetCarrierEntitlementsForPolling` — fetch carrier users with `FOR UPDATE SKIP LOCKED`
+## Files Overview
 
-### store_events.sql
-Queries for store webhook history:
-- `InsertStoreEvent` — persist webhook event (immutable)
-- `GetStoreEventsByUser` — fetch event history for a user
-- `GetStoreEventByID` — fetch event by ID (for debugging)
+### `entitlements.sql`
+Manages the mutable projection representing a user's canonical state:
+- `GetEntitlementByUserAndSource`: Resolves a specific state.
+- `GetEntitlementsByUser`: Fetch all active sources for multi-source conflict resolution.
+- `UpsertEntitlement`: UPSERT the latest state transition.
+- `GetCarrierEntitlementsForPolling`: Thread-safe fetch utilizing `FOR UPDATE SKIP LOCKED`.
 
-### marketplace_revocations.sql
-Queries for marketplace revoke history:
-- `InsertMarketplaceRevocation` — persist revoke operation (immutable)
-- `GetMarketplaceRevocationByEventID` — fetch revoke record by ID
+### `store_events.sql`
+Manages the immutable ledger of App Store payloads:
+- `InsertStoreEvent`: Append-only persistence.
 
-### processed_events.sql
-Queries for idempotency check:
-- `IsEventProcessed` — check if event already processed
-- `MarkEventProcessed` — mark event as processed
-- `GetProcessedEvent` — fetch processed event record
+### `marketplace_revocations.sql`
+Manages the immutable ledger of Marketplace bulk revokes:
+- `InsertMarketplaceRevocation`: Append-only persistence.
 
-### notifications.sql
-Queries for scheduled notifications:
-- `ScheduleNotification` — schedule a notification (deduped by unique constraint)
-- `GetDueNotifications` — fetch notifications ready to send
-- `MarkNotificationSent` — mark notification as sent
-- `GetNotificationByUserTypeAndDate` — check if notification exists
+### `processed_events.sql`
+Manages the absolute source of truth for idempotency checks:
+- `IsEventProcessed`: Validates incoming webhooks.
+- `MarkEventProcessed`: Secures idempotency locks post-processing.
 
-### audit_logs.sql
-Queries for audit trail (stretch feature):
-- `InsertAuditLog` — record entitlement state change
-- `GetAuditLogsByUser` — fetch timeline for a user (paginated)
-- `CountAuditLogsByUser` — count total audit entries for a user
+### `notifications.sql`
+Manages background job scheduling:
+- `ScheduleNotification`: Dedupes natively via `ON CONFLICT DO NOTHING`.
+- `GetDueNotifications`: Fetches jobs ready for broadcast.
 
-## Generating Code
+### `audit_logs.sql`
+Manages historical timeline generation (Stretch Feature):
+- `InsertAuditLog`: Synchronously captures delta changes.
+- `GetAuditLogsByUser`: Generates chronologically reversed user timelines.
 
-To generate Go code from these queries:
+---
+
+## Code Generation
+
+To regenerate the Go bindings after modifying any `.sql` file, run:
 
 ```bash
-sqlc generate
+make sqlc
+# Alternatively: sqlc generate
 ```
 
-This creates Go types and methods in `internal/infrastructure/postgres/gen/`.
+This injects generated types and repository methods into `internal/infrastructure/postgres/gen/`.
 
-## Type Mapping
+---
 
-sqlc automatically maps SQL types to Go types:
+## Advanced Key Patterns
 
-| SQL Type | Go Type |
-|----------|---------|
-| TEXT | string |
-| BOOLEAN | bool |
-| BIGINT | int64 |
-| BIGSERIAL | int64 |
-| TIMESTAMPTZ | time.Time |
-| TIMESTAMP | time.Time |
-| NULL | pointer type (e.g., *string, *time.Time) |
+> [!TIP]
+> The database strictly offloads data integrity validation from application code to SQL constraints.
 
-## Key Patterns
-
-### Idempotency
+### 1. Atomic Idempotency
 ```sql
 INSERT INTO processed_events (event_id, source)
 VALUES ($1, $2)
 ON CONFLICT DO NOTHING;
 ```
+Ensures that if two identically-identified webhooks arrive synchronously, the database automatically drops the second attempt.
 
-Atomic deduplication. Second insert is silently ignored.
-
-### FOR UPDATE SKIP LOCKED
+### 2. Thread-Safe Worker Queues (`FOR UPDATE SKIP LOCKED`)
 ```sql
-SELECT ... FROM user_entitlements
+SELECT * FROM user_entitlements
 WHERE source = 'CARRIER'
 FOR UPDATE SKIP LOCKED
 LIMIT 100;
 ```
+Enables massive concurrency. Instead of workers blocking each other on locked rows, they dynamically skip claimed tasks, processing the queue perfectly in parallel.
 
-Concurrent worker coordination. Each worker claims batch of users, others skip locked rows.
-
-### Ordering by Event Time
+### 3. Chronological Truth via Webhook Payloads
 ```sql
 SELECT * FROM store_events
 WHERE user_id = $1
 ORDER BY event_time_ms DESC;
 ```
-
-Sorted by `event_time_ms` (from webhook), not arrival time. Handles late arrivals correctly.
-
-### COALESCE for Defaults
-```sql
-SELECT COALESCE(MAX(last_event_time), 0) FROM user_entitlements;
-```
-
-Returns 0 if no rows (safer than NULL).
-
-## Testing
-
-Queries are tested in integration tests using Testcontainers PostgreSQL. See `tests/integration_test.go`.
-
-## References
-
-- [sqlc Documentation](https://docs.sqlc.dev/)
-- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
+Ordering operations are strictly tied to `event_time_ms` rather than server arrival time, seamlessly preventing late arrivals from overriding newer logical states.
