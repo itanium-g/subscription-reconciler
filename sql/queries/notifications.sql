@@ -18,4 +18,4 @@ WHERE id = $1;
 -- name: GetNotificationByUserTypeAndDate :one
 SELECT id, user_id, type, scheduled_for, sent_at, created_at
 FROM notifications
-WHERE user_id = $1 AND type = $2 AND DATE(scheduled_for) = DATE($3);
+WHERE user_id = $1 AND type = $2 AND ((scheduled_for AT TIME ZONE 'UTC')::date) = ((sqlc.arg(date) AT TIME ZONE 'UTC')::date);

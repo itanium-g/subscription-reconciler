@@ -14,9 +14,9 @@ import (
 )
 
 type Config struct {
-	DatabaseURL    string `env:"DATABASE_URL"    envDefault:"postgres://postgres:postgres@localhost:5432/adora?sslmode=disable"`
-	LogLevel       string `env:"LOG_LEVEL"       envDefault:"info"`
-	CarrierAPIURL  string `env:"CARRIER_API_URL" envDefault:"http://localhost:8080"`
+	DatabaseURL   string `env:"DATABASE_URL"    envDefault:"postgres://postgres:postgres@localhost:5432/adora?sslmode=disable"`
+	LogLevel      string `env:"LOG_LEVEL"       envDefault:"info"`
+	CarrierAPIURL string `env:"CARRIER_API_URL" envDefault:"http://localhost:8080"`
 }
 
 func main() {

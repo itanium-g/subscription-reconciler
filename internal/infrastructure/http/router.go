@@ -3,9 +3,9 @@ package http
 import (
 	"log/slog"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/example/adora/internal/application"
 	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/go-chi/chi/v5"
 )
 
 // Router sets up all HTTP routes.
@@ -41,7 +41,6 @@ func NewRouter(db postgres.Database, logger *slog.Logger) *Router {
 		timelineHandler:          timelineHandler,
 	}
 }
-
 
 // Mount mounts all routes on the chi router.
 func (r *Router) Mount(router chi.Router) {

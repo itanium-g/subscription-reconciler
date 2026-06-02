@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/example/adora/internal/application"
+	"github.com/go-chi/chi/v5"
 )
 
 // EntitlementHandler handles entitlement queries.

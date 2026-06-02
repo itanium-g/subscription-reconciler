@@ -17,21 +17,21 @@ type Entitlement struct {
 type Source string
 
 const (
-	SourceStore      Source = "STORE"
-	SourceCarrier    Source = "CARRIER"
+	SourceStore       Source = "STORE"
+	SourceCarrier     Source = "CARRIER"
 	SourceMarketplace Source = "MARKETPLACE"
 	SourceNone        Source = "NONE"
 )
 
 // Event represents a change that affects entitlements.
 type Event struct {
-	EventID      string
-	UserID       string
-	Source       Source
-	Type         EventType
-	EventTimeMs  int64
-	CreatedAt    time.Time
-	Reason       *string
+	EventID     string
+	UserID      string
+	Source      Source
+	Type        EventType
+	EventTimeMs int64
+	CreatedAt   time.Time
+	Reason      *string
 }
 
 // EventType represents the type of event.

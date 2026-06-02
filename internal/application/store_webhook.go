@@ -65,7 +65,7 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 	// last_event_time < EXCLUDED.last_event_time. Late-arriving events are
 	// stored in store_events but their state change is silently ignored by
 	// the DB if a newer event already owns the projection.
-	if err := s.db.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs); err != nil {
+	if err := s.db.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs, &payload.EventID); err != nil {
 		return nil, err
 	}
 

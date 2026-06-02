@@ -60,11 +60,11 @@ func isValidEventType(t string) bool {
 
 // DomainError types for validation
 var (
-	ErrMissingEventID    = DomainError{Code: "MISSING_EVENT_ID", Message: "eventId is required"}
-	ErrMissingUserID     = DomainError{Code: "MISSING_USER_ID", Message: "userId is required"}
-	ErrInvalidEventType  = DomainError{Code: "INVALID_EVENT_TYPE", Message: "type is not a valid event type"}
-	ErrInvalidEventTime  = DomainError{Code: "INVALID_EVENT_TIME", Message: "eventTimeMs must be greater than 0"}
-	ErrMissingProductID  = DomainError{Code: "MISSING_PRODUCT_ID", Message: "productId is required"}
+	ErrMissingEventID   = DomainError{Code: "MISSING_EVENT_ID", Message: "eventId is required"}
+	ErrMissingUserID    = DomainError{Code: "MISSING_USER_ID", Message: "userId is required"}
+	ErrInvalidEventType = DomainError{Code: "INVALID_EVENT_TYPE", Message: "type is not a valid event type"}
+	ErrInvalidEventTime = DomainError{Code: "INVALID_EVENT_TIME", Message: "eventTimeMs must be greater than 0"}
+	ErrMissingProductID = DomainError{Code: "MISSING_PRODUCT_ID", Message: "productId is required"}
 )
 
 type DomainError struct {

@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"time"
 
 	"github.com/example/adora/internal/domain"
 	"github.com/example/adora/internal/infrastructure/postgres"
@@ -38,7 +39,7 @@ func (s *marketplaceRevokeService) RevokeMarketplaceAccess(ctx context.Context, 
 	for _, userID := range request.UserIDs {
 		// Only update MARKETPLACE source, set active=false
 		reason := "MARKETPLACE_REVOKE"
-		if err := s.db.UpsertEntitlement(ctx, userID, "MARKETPLACE", false, nil, &reason, 0); err != nil {
+		if err := s.db.UpsertEntitlement(ctx, userID, "MARKETPLACE", false, nil, &reason, time.Now().UnixMilli(), nil); err != nil {
 			// Log error but continue with other users
 			continue
 		}

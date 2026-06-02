@@ -46,18 +46,13 @@ func (s *carrierPollingService) PollCarriersForUsers(ctx context.Context, batchS
 		// Network error from GetPlanStatus is returned as (api_error, err).
 		// Treat any error the same as api_error: preserve existing state.
 		if err != nil || status == domain.CarrierStatusAPIError {
-			_ = s.db.UpdateEntitlementCarrierPolledAt(ctx, ent.UserID, "CARRIER")
 			continue
 		}
 
 		active := status == domain.CarrierStatusActive
 		reason := "CARRIER_POLL"
 
-		if err := s.db.UpsertEntitlement(ctx, ent.UserID, "CARRIER", active, nil, &reason, time.Now().UnixMilli()); err != nil {
-			continue
-		}
-
-		if err := s.db.UpdateEntitlementCarrierPolledAt(ctx, ent.UserID, "CARRIER"); err != nil {
+		if err := s.db.UpsertEntitlement(ctx, ent.UserID, "CARRIER", active, nil, &reason, time.Now().UnixMilli(), nil); err != nil {
 			continue
 		}
 

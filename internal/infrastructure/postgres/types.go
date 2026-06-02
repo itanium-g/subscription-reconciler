@@ -7,25 +7,25 @@ import (
 
 // Entitlement represents a user's premium subscription from a single source.
 type Entitlement struct {
-	UserID         string
-	Source         string
-	Active         bool
-	ExpiresAt      *time.Time
-	Reason         *string
-	UpdatedAt      time.Time
-	LastEventTime  int64
+	UserID          string
+	Source          string
+	Active          bool
+	ExpiresAt       *time.Time
+	Reason          *string
+	UpdatedAt       time.Time
+	LastEventTime   int64
 	CarrierPolledAt *time.Time
 }
 
 // StoreEvent represents a store webhook event.
 type StoreEvent struct {
-	ID         int64
-	EventID    string
-	UserID     string
-	Type       string
+	ID          int64
+	EventID     string
+	UserID      string
+	Type        string
 	EventTimeMs int64
-	ProductID  *string
-	CreatedAt  time.Time
+	ProductID   *string
+	CreatedAt   time.Time
 }
 
 // MarketplaceRevocation represents a marketplace revoke operation.
@@ -55,23 +55,23 @@ type Notification struct {
 
 // AuditLog represents an entitlement state transition.
 type AuditLog struct {
-	ID                 int64
-	UserID             string
-	Source             string
-	PreviousActive     *bool
-	NextActive         bool
-	PreviousExpiresAt  *time.Time
-	NextExpiresAt      *time.Time
-	TriggeringEventID  *string
-	Reason             *string
-	CreatedAt          time.Time
+	ID                int64
+	UserID            string
+	Source            string
+	PreviousActive    *bool
+	NextActive        bool
+	PreviousExpiresAt *time.Time
+	NextExpiresAt     *time.Time
+	TriggeringEventID *string
+	Reason            *string
+	CreatedAt         time.Time
 }
 
 // EntitlementRepository handles entitlement persistence.
 type EntitlementRepository interface {
 	GetEntitlementByUserAndSource(ctx context.Context, userID string, source string) (*Entitlement, error)
 	GetEntitlementsByUser(ctx context.Context, userID string) ([]Entitlement, error)
-	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64) error
+	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) error
 	UpdateEntitlementCarrierPolledAt(ctx context.Context, userID string, source string) error
 	GetLastEventTimeFromStore(ctx context.Context, userID string) (int64, error)
 	GetEntitlementsExpiringWithin24h(ctx context.Context) ([]Entitlement, error)

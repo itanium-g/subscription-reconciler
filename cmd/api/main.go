@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	infrahttp "github.com/example/adora/internal/infrastructure/http"
 	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 )
 
 type Config struct {

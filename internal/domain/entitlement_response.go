@@ -14,8 +14,8 @@ type EntitlementResponse struct {
 // SourcePriority defines the priority order for entitlement sources.
 // Higher index = higher priority.
 var SourcePriority = map[string]int{
-	"STORE":      3,
-	"CARRIER":    2,
+	"STORE":       3,
+	"CARRIER":     2,
 	"MARKETPLACE": 1,
-	"NONE":       0,
+	"NONE":        0,
 }

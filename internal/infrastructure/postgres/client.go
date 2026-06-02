@@ -74,8 +74,41 @@ func (c *Client) GetEntitlementsByUser(ctx context.Context, userID string) ([]En
 	return out, nil
 }
 
-func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64) error {
-	return c.queries.UpsertEntitlement(ctx, gen.UpsertEntitlementParams{
+func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	q := c.queries.WithTx(tx)
+
+	// 1. Fetch current entitlement state
+	var prevActive *bool
+	var prevExpiresAt *time.Time
+	var existingLastEventTime int64
+
+	row, err := q.GetEntitlementByUserAndSource(ctx, gen.GetEntitlementByUserAndSourceParams{
+		UserID: userID,
+		Source: source,
+	})
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		ent := entitlementFromGen(row)
+		prevActive = &ent.Active
+		prevExpiresAt = ent.ExpiresAt
+		existingLastEventTime = ent.LastEventTime
+	}
+
+	// 2. If new event is not newer than existing, skip update
+	if err == nil && lastEventTime <= existingLastEventTime {
+		return nil
+	}
+
+	// 3. Perform upsert
+	err = q.UpsertEntitlement(ctx, gen.UpsertEntitlementParams{
 		UserID:        userID,
 		Source:        source,
 		Active:        active,
@@ -83,6 +116,26 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 		Reason:        nullString(reason),
 		LastEventTime: lastEventTime,
 	})
+	if err != nil {
+		return err
+	}
+
+	// 4. Insert audit log
+	err = q.InsertAuditLog(ctx, gen.InsertAuditLogParams{
+		UserID:            userID,
+		Source:            source,
+		PreviousActive:    nullBool(prevActive),
+		NextActive:        active,
+		PreviousExpiresAt: nullTime(prevExpiresAt),
+		NextExpiresAt:     nullTime(expiresAt),
+		TriggeringEventID: nullString(triggeringEventID),
+		Reason:            nullString(reason),
+	})
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (c *Client) UpdateEntitlementCarrierPolledAt(ctx context.Context, userID string, source string) error {
@@ -121,14 +174,36 @@ func (c *Client) GetEntitlementsExpiringWithin24h(ctx context.Context) ([]Entitl
 }
 
 func (c *Client) GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]Entitlement, error) {
-	rows, err := c.queries.GetCarrierEntitlementsForPolling(ctx, limit)
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
+	defer tx.Rollback()
+
+	q := c.queries.WithTx(tx)
+
+	rows, err := q.GetCarrierEntitlementsForPolling(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]Entitlement, len(rows))
 	for i, r := range rows {
 		out[i] = *entitlementFromGen(r)
+
+		err = q.UpdateEntitlementCarrierPolledAt(ctx, gen.UpdateEntitlementCarrierPolledAtParams{
+			UserID: r.UserID,
+			Source: "CARRIER",
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
 	return out, nil
 }
 

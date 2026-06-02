@@ -67,7 +67,7 @@ CREATE TABLE notifications (
 -- One notification per (user_id, type, calendar day) — deduplication guarantee.
 -- Expressed as a unique index so sqlc can parse it (inline DATE() in UNIQUE is not supported by sqlc).
 CREATE UNIQUE INDEX uq_notifications_user_type_day
-    ON notifications (user_id, type, DATE(scheduled_for));
+    ON notifications (user_id, type, ((scheduled_for AT TIME ZONE 'UTC')::date));
 
 -- Create audit_logs table (stretch feature)
 -- Complete history of entitlement state transitions

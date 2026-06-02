@@ -31,8 +31,8 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: /app/api
 
   worker:
@@ -46,8 +46,8 @@ services:
       LOG_LEVEL: "info"
       CARRIER_API_URL: "http://mock-carrier:8081"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: /app/worker
 
   mock-carrier:
@@ -64,9 +64,19 @@ services:
     ports:
       - "8081:8081"
     depends_on:
+      migrate:
+        condition: service_completed_successfully
+    command: /app/api
+
+  migrate:
+    image: migrate/migrate:v4.18.2
+    container_name: adora_migrate
+    volumes:
+      - ./migrations:/migrations
+    command: -path=/migrations -database="postgres://postgres:postgres@postgres:5432/adora?sslmode=disable" up
+    depends_on:
       postgres:
         condition: service_healthy
-    command: /app/api
 
 volumes:
   postgres_data:
