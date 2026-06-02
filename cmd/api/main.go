@@ -54,6 +54,12 @@ func main() {
 	// Set up HTTP router
 	router := chi.NewRouter()
 
+	// Health check endpoint
+	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
 	// Middleware
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer)
