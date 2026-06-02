@@ -134,6 +134,88 @@ GET /users/{userId}/timeline
 
 Returns reconstructed history of entitlement changes from audit log (requires stretch implementation).
 
+## Testing with curl
+
+Once the application is running, you can test its core and stretch functionality using the following `curl` command examples:
+
+### 1. In-App Store Webhooks (`POST /webhooks/store`)
+
+**Initial Purchase (Active)**
+Grant premium access to `user_store_1` starting now:
+```bash
+curl -X POST http://localhost:8080/webhooks/store \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventId": "evt_store_purchase_001",
+    "userId": "user_store_1",
+    "type": "INITIAL_PURCHASE",
+    "eventTimeMs": '$(date +%s000)',
+    "productId": "premium_monthly"
+  }'
+```
+
+**Duplicate Event Ingestion (Idempotency)**
+Send the exact same request again to test idempotency:
+```bash
+curl -X POST http://localhost:8080/webhooks/store \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventId": "evt_store_purchase_001",
+    "userId": "user_store_1",
+    "type": "INITIAL_PURCHASE",
+    "eventTimeMs": '$(date +%s000)',
+    "productId": "premium_monthly"
+  }'
+```
+*(Should return `isDuplicate: true`)*
+
+**Out-of-Order / Late-Arriving Event**
+Simulate a late-arriving event by sending a `BILLING_ISSUE` (which cancels access) timestamped in the past (e.g., 20 seconds ago), after the active purchase:
+```bash
+curl -X POST http://localhost:8080/webhooks/store \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventId": "evt_store_late_billing_002",
+    "userId": "user_store_1",
+    "type": "BILLING_ISSUE",
+    "eventTimeMs": '$(( $(date +%s) - 20 ))'000',
+    "productId": "premium_monthly"
+  }'
+```
+*(Will be accepted for logging but will not overwrite the active purchase status since it is timestamped earlier)*
+
+### 2. Entitlement Queries (`GET /users/:id/entitlement`)
+
+Retrieve the current canonical entitlement for a user:
+```bash
+curl http://localhost:8080/users/user_store_1/entitlement
+```
+
+### 3. Marketplace Bulk Revoke (`POST /webhooks/marketplace/revoke`)
+
+Revoke marketplace corporate access bulk for a list of users:
+```bash
+curl -X POST http://localhost:8080/webhooks/marketplace/revoke \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userIds": ["user_market_1", "user_market_2"]
+  }'
+```
+
+### 4. Carrier Polling Mock (`GET /mock/carrier/plan`)
+
+Query the carrier mock endpoint to check its randomized output behavior:
+```bash
+curl "http://localhost:8080/mock/carrier/plan?userId=user_carrier_1"
+```
+
+### 5. Transition Timeline / Audit Trail (`GET /users/:id/timeline`)
+
+Query the reconstructed state transition history for a user:
+```bash
+curl http://localhost:8080/users/user_store_1/timeline
+```
+
 ## Database Schema
 
 ### Core Tables
