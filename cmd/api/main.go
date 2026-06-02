@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/example/subscription-reconciler/internal/config"
 	infrahttp "github.com/example/subscription-reconciler/internal/infrastructure/http"
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 	"github.com/go-chi/chi/v5"
@@ -34,7 +35,7 @@ func main() {
 
 	// Logger setup
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: parseLevelFromString(cfg.LogLevel),
+		Level: config.ParseLevelFromString(cfg.LogLevel),
 	}))
 	slog.SetDefault(logger)
 
@@ -92,19 +93,4 @@ func main() {
 	}
 
 	logger.InfoContext(shutdownCtx, "server stopped")
-}
-
-func parseLevelFromString(level string) slog.Level {
-	switch level {
-	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
 }

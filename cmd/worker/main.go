@@ -2,19 +2,19 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	"github.com/caarlos0/env/v11"
-	"github.com/example/subscription-reconciler/internal/infrastructure/carrier"
+	"github.com/example/subscription-reconciler/internal/application"
+	"github.com/example/subscription-reconciler/internal/config"
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 	"github.com/example/subscription-reconciler/internal/infrastructure/worker"
 )
 
-type Config struct {
-	DatabaseURL   string `env:"DATABASE_URL"    envDefault:"postgres://postgres:postgres@localhost:5432/subscription_reconciler?sslmode=disable"`
 	LogLevel      string `env:"LOG_LEVEL"       envDefault:"info"`
 	CarrierAPIURL string `env:"CARRIER_API_URL" envDefault:"http://localhost:8080"`
 }
@@ -31,7 +31,7 @@ func main() {
 
 	// Logger setup
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: parseLevelFromString(cfg.LogLevel),
+		Level: config.ParseLevelFromString(cfg.LogLevel),
 	}))
 	slog.SetDefault(logger)
 
@@ -62,17 +62,4 @@ func main() {
 	logger.InfoContext(ctx, "worker stopped")
 }
 
-func parseLevelFromString(level string) slog.Level {
-	switch level {
-	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
-}
+
