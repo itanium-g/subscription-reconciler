@@ -110,6 +110,7 @@ func TestMain(m *testing.M) {
 		"../migrations/001_initial_schema.up.sql",
 		"../migrations/002_add_indexes.up.sql",
 		"../migrations/003_add_carrier_polling.up.sql",
+		"../migrations/004_fix_expires_at_constraint.up.sql",
 	}
 
 	for _, file := range migrationFiles {
