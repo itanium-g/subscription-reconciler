@@ -2,41 +2,70 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/caarlos0/env/v11"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	infrahttp "github.com/example/adora/internal/infrastructure/http"
+	"github.com/example/adora/internal/infrastructure/postgres"
 )
+
+type Config struct {
+	Port        string `env:"PORT" envDefault:"8080"`
+	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://postgres:postgres@localhost:5432/adora?sslmode=disable"`
+	LogLevel    string `env:"LOG_LEVEL" envDefault:"info"`
+}
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Logger setup
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
-
-	// TODO: Load configuration from environment
-	// TODO: Initialize database connection
-	// TODO: Set up HTTP routes
-	// TODO: Start server
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	// Load configuration
+	var cfg Config
+	if err := env.Parse(&cfg); err != nil {
+		panic(err)
 	}
 
-	logger.InfoContext(ctx, "starting API server", "port", port)
+	// Logger setup
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: parseLevelFromString(cfg.LogLevel),
+	}))
+	slog.SetDefault(logger)
 
-	// Placeholder server
+	logger.InfoContext(ctx, "starting API server", "port", cfg.Port, "database", cfg.DatabaseURL)
+
+	// Initialize database connection
+	db, err := postgres.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.ErrorContext(ctx, "failed to connect to database", "err", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	logger.InfoContext(ctx, "connected to database")
+
+	// Set up HTTP router
+	router := chi.NewRouter()
+
+	// Middleware
+	router.Use(middleware.Logger)
+	router.Use(middleware.Recoverer)
+	router.Use(middleware.RequestID)
+
+	// Mount API routes
+	apiRouter := infrahttp.NewRouter(db, logger)
+	apiRouter.Mount(router)
+
+	// Create HTTP server
 	server := &http.Server{
-		Addr: ":" + port,
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintf(w, "Premium Entitlement Reconciler API\n")
-		}),
+		Addr:         ":" + cfg.Port,
+		Handler:      router,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -44,7 +73,7 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		logger.InfoContext(ctx, "API server started", "addr", server.Addr)
+		logger.InfoContext(ctx, "API server listening", "addr", server.Addr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.ErrorContext(ctx, "server error", "err", err)
 		}
@@ -63,4 +92,19 @@ func main() {
 	}
 
 	logger.InfoContext(shutdownCtx, "server stopped")
+}
+
+func parseLevelFromString(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "info":
+		return slog.LevelInfo
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
