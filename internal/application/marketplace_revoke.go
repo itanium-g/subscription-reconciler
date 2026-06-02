@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/example/subscription-reconciler/internal/domain"
@@ -35,11 +36,16 @@ func (s *marketplaceRevokeService) RevokeMarketplaceAccess(ctx context.Context, 
 	}
 
 	// Process each user
+	batchTS := time.Now()
 	var processed int32
 	for _, userID := range request.UserIDs {
+		// Record the revocation in the immutable history table
+		eventID := fmt.Sprintf("marketplace_revoke_%s_%d", userID, batchTS.UnixMilli())
+		_ = s.db.InsertMarketplaceRevocation(ctx, eventID, userID)
+
 		// Only update MARKETPLACE source, set active=false
 		reason := "MARKETPLACE_REVOKE"
-		if _, err := s.db.UpsertEntitlement(ctx, userID, "MARKETPLACE", false, nil, &reason, time.Now().UnixMilli(), nil); err != nil {
+		if _, err := s.db.UpsertEntitlement(ctx, userID, "MARKETPLACE", false, nil, &reason, batchTS.UnixMilli(), nil); err != nil {
 			// Log error but continue with other users
 			continue
 		}
