@@ -69,9 +69,14 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 		return nil, err
 	}
 
-	// Step 6: If expiring soon, schedule notification
-	if active && expiresAt != nil && timeUntilExpiry(*expiresAt) <= 24*time.Hour {
-		_ = s.db.ScheduleNotification(ctx, payload.UserID, "PREMIUM_EXPIRES_SOON", *expiresAt)
+	// Step 6: Schedule expiration notification for 24 hours before expiry.
+	// Always schedule when we have an active grant with an expiry date.
+	// If scheduled_for falls in the past (late-arriving event), the worker
+	// picks it up on its next tick. The DB unique index on
+	// (user_id, type, DATE(scheduled_for)) prevents duplicate rows.
+	if active && expiresAt != nil {
+		notifyAt := expiresAt.Add(-24 * time.Hour)
+		_ = s.db.ScheduleNotification(ctx, payload.UserID, "PREMIUM_EXPIRES_SOON", notifyAt)
 	}
 
 	// Step 7: Mark event as processed (idempotency)
@@ -122,9 +127,4 @@ func (s *storeWebhookService) computeStateTransition(eventType string, eventTime
 	}
 
 	return active, expiresAt, reason
-}
-
-// timeUntilExpiry calculates time until expiration.
-func timeUntilExpiry(expiresAt time.Time) time.Duration {
-	return time.Until(expiresAt)
 }
