@@ -13,6 +13,70 @@ The service maintains the canonical truth: "Is this user premium right now, and 
 
 ## Architecture
 
+```mermaid
+graph TD
+    %% Ingress & Channels
+    subgraph Ingress ["Ingress Channels"]
+        StoreWeb[App Store Webhook]
+        MarketplaceWeb[Marketplace Bulk Revoke]
+    end
+
+    %% Application Server & Handlers
+    subgraph AppServer ["API Server (Port 8080)"]
+        StoreHandler["POST /webhooks/store"]
+        MarketplaceHandler["POST /webhooks/marketplace/revoke"]
+        EntitlementHandler["GET /users/:id/entitlement"]
+        TimelineHandler["GET /users/:id/timeline"]
+        MockCarrierHandler["GET /mock/carrier/plan (Port 8081)"]
+    end
+
+    %% Workers
+    subgraph Workers ["Background Workers"]
+        CarrierWorker[Carrier Polling Worker]
+        NotificationWorker[Notification Worker]
+    end
+
+    %% Database Storage
+    subgraph DB ["PostgreSQL Database"]
+        StoreEventsTable[(store_events)]
+        MarketplaceTable[(marketplace_revocations)]
+        ProcessedEvents[(processed_events)]
+        EntitlementsTable[(user_entitlements)]
+        NotificationsTable[(notifications)]
+        AuditLogsTable[(audit_logs)]
+    end
+
+    %% Data Flow Connections
+    StoreWeb -->|Unordered JSON| StoreHandler
+    MarketplaceWeb -->|Bulk IDs| MarketplaceHandler
+
+    %% Handler Interactions
+    StoreHandler -->|Deduplication| ProcessedEvents
+    StoreHandler -->|Immutable Log| StoreEventsTable
+    StoreHandler -->|Upsert State & Audit| EntitlementsTable
+    StoreHandler -->|Transactional Log| AuditLogsTable
+    StoreHandler -->|Schedule 24h Expiry| NotificationsTable
+
+    MarketplaceHandler -->|Record Revocation| MarketplaceTable
+    MarketplaceHandler -->|Revoke State & Audit| EntitlementsTable
+    MarketplaceHandler -->|Transactional Log| AuditLogsTable
+
+    %% Carrier Polling Flow
+    CarrierWorker -->|Poll Scheduled Carrier Users| EntitlementsTable
+    CarrierWorker -->|HTTP GET Request| MockCarrierHandler
+    MockCarrierHandler -.->|Plan Status Response| CarrierWorker
+    CarrierWorker -->|Upsert Carrier State & Audit| EntitlementsTable
+    CarrierWorker -->|Transactional Log| AuditLogsTable
+
+    %% Query Flows
+    EntitlementHandler -->|Read Canonical Priority| EntitlementsTable
+    TimelineHandler -->|Read Transitions| AuditLogsTable
+
+    %% Notifications Flow
+    NotificationWorker -->|Fetch Due| NotificationsTable
+    NotificationWorker -->|Mark Sent| NotificationsTable
+```
+
 ### Design Principles
 
 - **Hybrid event model**: Immutable event history + mutable canonical projection
