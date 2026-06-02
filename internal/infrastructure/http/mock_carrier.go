@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/example/adora/internal/domain"
+	"github.com/example/subscription-reconciler/internal/domain"
 )
 
 // MockCarrierHandler handles mock carrier API requests.

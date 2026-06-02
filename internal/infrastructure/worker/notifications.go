@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/example/adora/internal/application"
-	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/example/subscription-reconciler/internal/application"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 )
 
 // NotificationWorker runs background notification jobs.

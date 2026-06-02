@@ -3,8 +3,8 @@ package http
 import (
 	"log/slog"
 
-	"github.com/example/adora/internal/application"
-	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/example/subscription-reconciler/internal/application"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 	"github.com/go-chi/chi/v5"
 )
 

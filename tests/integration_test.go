@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/adora/internal/application"
-	"github.com/example/adora/internal/domain"
-	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/example/subscription-reconciler/internal/application"
+	"github.com/example/subscription-reconciler/internal/domain"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -31,7 +31,7 @@ func SetupPostgres(ctx context.Context) (*PostgresContainer, error) {
 		Env: map[string]string{
 			"POSTGRES_USER":     "postgres",
 			"POSTGRES_PASSWORD": "postgres",
-			"POSTGRES_DB":       "adora_test",
+			"POSTGRES_DB":       "subscription_reconciler_test",
 		},
 		WaitingFor: wait.ForLog("database system is ready to accept connections").
 			WithOccurrence(2).
@@ -58,7 +58,7 @@ func SetupPostgres(ctx context.Context) (*PostgresContainer, error) {
 		return nil, err
 	}
 
-	dsn := fmt.Sprintf("postgres://postgres:postgres@%s:%s/adora_test?sslmode=disable", host, port.Port())
+	dsn := fmt.Sprintf("postgres://postgres:postgres@%s:%s/subscription_reconciler_test?sslmode=disable", host, port.Port())
 
 	return &PostgresContainer{
 		container: container,

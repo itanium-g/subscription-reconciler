@@ -3,8 +3,8 @@ package application
 import (
 	"context"
 
-	"github.com/example/adora/internal/domain"
-	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/example/subscription-reconciler/internal/domain"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 )
 
 // EntitlementQueryService handles entitlement queries.

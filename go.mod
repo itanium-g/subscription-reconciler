@@ -1,4 +1,4 @@
-module github.com/example/adora
+module github.com/example/subscription-reconciler
 
 go 1.26.3
 

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/example/adora/internal/infrastructure/postgres/gen"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres/gen"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx driver for database/sql
 )
 

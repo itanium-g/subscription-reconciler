@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/example/adora/internal/application"
-	"github.com/example/adora/internal/domain"
-	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/example/subscription-reconciler/internal/application"
+	"github.com/example/subscription-reconciler/internal/domain"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 )
 
 // PollingWorker runs background polling jobs.

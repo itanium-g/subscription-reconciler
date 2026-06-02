@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/example/adora/internal/application"
+	"github.com/example/subscription-reconciler/internal/application"
 	"github.com/go-chi/chi/v5"
 )
 

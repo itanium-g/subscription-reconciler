@@ -10,15 +10,15 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
-	infrahttp "github.com/example/adora/internal/infrastructure/http"
-	"github.com/example/adora/internal/infrastructure/postgres"
+	infrahttp "github.com/example/subscription-reconciler/internal/infrastructure/http"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
 type Config struct {
 	Port        string `env:"PORT" envDefault:"8080"`
-	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://postgres:postgres@localhost:5432/adora?sslmode=disable"`
+	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://postgres:postgres@localhost:5432/subscription_reconciler?sslmode=disable"`
 	LogLevel    string `env:"LOG_LEVEL" envDefault:"info"`
 }
 

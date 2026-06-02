@@ -1,11 +1,11 @@
 services:
   postgres:
     image: postgres:18.4-alpine
-    container_name: adora_postgres
+    container_name: subscription-reconciler_postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: adora
+      POSTGRES_DB: subscription_reconciler
     ports:
       - "5432:5432"
     volumes:
@@ -21,9 +21,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: api
-    container_name: adora_api
+    container_name: subscription-reconciler_api
     environment:
-      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/adora?sslmode=disable"
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/subscription_reconciler?sslmode=disable"
       PORT: "8080"
       LOG_LEVEL: "info"
     ports:
@@ -38,9 +38,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: worker
-    container_name: adora_worker
+    container_name: subscription-reconciler_worker
     environment:
-      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/adora?sslmode=disable"
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/subscription_reconciler?sslmode=disable"
       LOG_LEVEL: "info"
       CARRIER_API_URL: "http://mock-carrier:8081"
     depends_on:
@@ -53,9 +53,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: api
-    container_name: adora_mock_carrier
+    container_name: subscription-reconciler_mock_carrier
     environment:
-      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/adora?sslmode=disable"
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/subscription_reconciler?sslmode=disable"
       PORT: "8081"
       LOG_LEVEL: "info"
       MOCK_CARRIER_MODE: "true"
@@ -68,10 +68,10 @@ services:
 
   migrate:
     image: migrate/migrate:v4.18.2
-    container_name: adora_migrate
+    container_name: subscription-reconciler_migrate
     volumes:
       - ./migrations:/migrations
-    command: -path=/migrations -database="postgres://postgres:postgres@postgres:5432/adora?sslmode=disable" up
+    command: -path=/migrations -database="postgres://postgres:postgres@postgres:5432/subscription_reconciler?sslmode=disable" up
     depends_on:
       postgres:
         condition: service_healthy

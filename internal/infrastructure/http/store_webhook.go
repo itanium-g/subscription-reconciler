@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/example/adora/internal/application"
-	"github.com/example/adora/internal/domain"
+	"github.com/example/subscription-reconciler/internal/application"
+	"github.com/example/subscription-reconciler/internal/domain"
 )
 
 // StoreWebhookHandler handles incoming store webhooks.

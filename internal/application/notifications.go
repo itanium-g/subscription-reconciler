@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/example/adora/internal/infrastructure/postgres"
+	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 )
 
 // NotificationService handles notification operations.
