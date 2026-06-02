@@ -197,6 +197,7 @@ ON CONFLICT (user_id, source) DO UPDATE SET
   reason = EXCLUDED.reason,
   updated_at = NOW(),
   last_event_time = EXCLUDED.last_event_time
+WHERE user_entitlements.last_event_time < EXCLUDED.last_event_time
 `
 
 type UpsertEntitlementParams struct {

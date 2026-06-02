@@ -38,25 +38,27 @@ func (s *carrierPollingService) PollCarriersForUsers(ctx context.Context, batchS
 		return 0, err
 	}
 
-	// Process each user
 	var processed int32
 	for _, ent := range entitlements {
-		// Get current carrier status (mocked)
 		status := s.MockCarrierStatus(ent.UserID)
 
-		// Map status to entitlement state
+		// api_error is a transient failure — do not modify the existing
+		// entitlement state. Update the polling timestamp so this user
+		// still rotates to the back of the polling queue.
+		if status == domain.CarrierStatusAPIError {
+			_ = s.db.UpdateEntitlementCarrierPolledAt(ctx, ent.UserID, "CARRIER")
+			continue
+		}
+
 		active := status == domain.CarrierStatusActive
 		reason := "CARRIER_POLL"
 
-		// Update entitlement
 		if err := s.db.UpsertEntitlement(ctx, ent.UserID, "CARRIER", active, nil, &reason, time.Now().UnixMilli()); err != nil {
 			// Log error but continue with other users
 			continue
 		}
 
-		// Update polling timestamp
 		if err := s.db.UpdateEntitlementCarrierPolledAt(ctx, ent.UserID, "CARRIER"); err != nil {
-			// Log error but continue
 			continue
 		}
 

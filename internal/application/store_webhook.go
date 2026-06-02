@@ -57,31 +57,24 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 		return nil, err
 	}
 
-	// Step 4: Check last event time from STORE to determine if we should update state
-	lastEventTime, err := s.db.GetLastEventTimeFromStore(ctx, payload.UserID)
-	if err != nil {
+	// Step 4: Calculate new entitlement state based on event type
+	active, expiresAt, reason := s.computeStateTransition(payload.Type, payload.EventTimeMs)
+
+	// Step 5: Upsert entitlement state for STORE source.
+	// The DB enforces ordering atomically: ON CONFLICT DO UPDATE WHERE
+	// last_event_time < EXCLUDED.last_event_time. Late-arriving events are
+	// stored in store_events but their state change is silently ignored by
+	// the DB if a newer event already owns the projection.
+	if err := s.db.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs); err != nil {
 		return nil, err
 	}
 
-	// Only update if this event is newer (or no prior event)
-	shouldUpdateState := payload.EventTimeMs >= lastEventTime
-
-	if shouldUpdateState {
-		// Step 5: Calculate new entitlement state based on event type
-		active, expiresAt, reason := s.computeStateTransition(payload.Type)
-
-		// Step 6: Update entitlement state for STORE source
-		if err := s.db.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs); err != nil {
-			return nil, err
-		}
-
-		// Step 7: If expiring soon, schedule notification
-		if active && expiresAt != nil && timeUntilExpiry(*expiresAt) <= 24*time.Hour {
-			_ = s.db.ScheduleNotification(ctx, payload.UserID, "PREMIUM_EXPIRES_SOON", *expiresAt)
-		}
+	// Step 6: If expiring soon, schedule notification
+	if active && expiresAt != nil && timeUntilExpiry(*expiresAt) <= 24*time.Hour {
+		_ = s.db.ScheduleNotification(ctx, payload.UserID, "PREMIUM_EXPIRES_SOON", *expiresAt)
 	}
 
-	// Step 8: Mark event as processed (idempotency)
+	// Step 7: Mark event as processed (idempotency)
 	if err := s.db.MarkEventProcessed(ctx, payload.EventID, "STORE"); err != nil {
 		return nil, err
 	}
@@ -96,31 +89,33 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 }
 
 // computeStateTransition determines the new entitlement state based on event type.
-func (s *storeWebhookService) computeStateTransition(eventType string) (active bool, expiresAt *time.Time, reason string) {
-	now := time.Now()
+// expiresAt is anchored to eventTimeMs, not to the current wall clock, so that
+// late-arriving events do not grant a future window they are not entitled to.
+func (s *storeWebhookService) computeStateTransition(eventType string, eventTimeMs int64) (active bool, expiresAt *time.Time, reason string) {
+	eventTime := time.UnixMilli(eventTimeMs)
 
 	switch eventType {
 	case "INITIAL_PURCHASE", "RENEWAL", "UN_CANCELLATION":
-		// User gains premium access for 30 days
+		// Premium access granted for one month from the event time.
 		active = true
-		expiry := now.AddDate(0, 1, 0) // 30 days from now
+		expiry := eventTime.AddDate(0, 1, 0)
 		expiresAt = &expiry
 		reason = eventType
 
 	case "CANCELLATION":
-		// User loses premium access immediately
+		// User loses premium access immediately.
 		active = false
 		expiresAt = nil
 		reason = eventType
 
 	case "BILLING_ISSUE":
-		// Temporary suspension, but don't revoke completely
+		// Temporary suspension — access revoked, no expiry date set.
 		active = false
 		expiresAt = nil
 		reason = eventType
 
 	case "EXPIRATION":
-		// Premium grant expired
+		// Premium grant has elapsed.
 		active = false
 		expiresAt = nil
 		reason = eventType
