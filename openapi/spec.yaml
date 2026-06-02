@@ -1,0 +1,493 @@
+openapi: 3.1.0
+info:
+  title: Premium Entitlement Reconciler
+  version: 1.0.0
+  description: |
+    Backend service that reconciles premium subscriptions from three independent 
+    sales channels (in-app store, mobile carrier, third-party marketplace) into a 
+    single canonical entitlement state.
+  contact:
+    name: Backend Team
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: http://api:8080
+    description: Docker Compose
+
+paths:
+  /webhooks/store:
+    post:
+      summary: Ingest store webhook events
+      description: |
+        Accepts store webhook events (INITIAL_PURCHASE, RENEWAL, CANCELLATION, etc.).
+        Handles duplicates (idempotent), out-of-order delivery, and late arrivals.
+        Events are ordered by event_time_ms (webhook timestamp), not arrival time.
+      tags:
+        - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreWebhookRequest'
+      responses:
+        '202':
+          description: Event accepted and queued for processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreWebhookResponse'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Conflict - invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /webhooks/marketplace/revoke:
+    post:
+      summary: Revoke marketplace-granted access
+      description: |
+        Bulk revoke marketplace-granted premium access for specified users.
+        Only affects MARKETPLACE source; leaves STORE and CARRIER entitlements unchanged.
+      tags:
+        - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarketplaceRevokeRequest'
+      responses:
+        '202':
+          description: Revocation request accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketplaceRevokeResponse'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/{userId}/entitlement:
+    get:
+      summary: Get user's current entitlement status
+      description: |
+        Returns the canonical current entitlement state for a user.
+        When multiple sources are active, returns the highest-priority one using:
+        STORE > CARRIER > MARKETPLACE > NONE
+      tags:
+        - Entitlements
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: User ID (e.g., "u_42")
+          schema:
+            type: string
+            pattern: '^[a-z_][a-z0-9_]*$'
+      responses:
+        '200':
+          description: Current entitlement status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitlementResponse'
+        '400':
+          description: Invalid user ID format
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found (no entitlements yet)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/{userId}/timeline:
+    get:
+      summary: Get user's entitlement change history
+      description: |
+        Returns the reconstructed history of the user's entitlement state changes
+        from the audit log. Stretch feature (optional).
+      tags:
+        - Timeline
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          description: User ID (e.g., "u_42")
+          schema:
+            type: string
+            pattern: '^[a-z_][a-z0-9_]*$'
+        - name: limit
+          in: query
+          required: false
+          description: Max number of records to return (default 100, max 1000)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          required: false
+          description: Number of records to skip (for pagination)
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Entitlement change history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimelineResponse'
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mock/carrier/plan:
+    get:
+      summary: Mock carrier API endpoint (testing only)
+      description: |
+        Simulates carrier API responses for testing.
+        Returns: 85% active, 10% inactive, 5% api_error
+      tags:
+        - Mock
+      parameters:
+        - name: userId
+          in: query
+          required: true
+          description: User ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Carrier plan status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MockCarrierResponse'
+        '500':
+          description: API error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    enum: ['api_error']
+
+components:
+  schemas:
+    # Request/Response Schemas
+    StoreWebhookRequest:
+      type: object
+      required:
+        - eventId
+        - userId
+        - type
+        - eventTimeMs
+        - productId
+      properties:
+        eventId:
+          type: string
+          description: Unique event identifier (e.g., "evt_abc123")
+          pattern: '^[a-z0-9_-]{1,255}$'
+        userId:
+          type: string
+          description: User identifier (e.g., "u_42")
+          pattern: '^[a-z_][a-z0-9_]*$'
+        type:
+          type: string
+          enum:
+            - INITIAL_PURCHASE
+            - RENEWAL
+            - CANCELLATION
+            - BILLING_ISSUE
+            - EXPIRATION
+            - UN_CANCELLATION
+          description: Type of store event
+        eventTimeMs:
+          type: integer
+          format: int64
+          description: Milliseconds since Unix epoch (used for event ordering)
+          minimum: 0
+        productId:
+          type: string
+          description: Product identifier (e.g., "premium_monthly")
+          pattern: '^[a-z_][a-z0-9_]*$'
+      example:
+        eventId: "evt_abc123"
+        userId: "u_42"
+        type: "RENEWAL"
+        eventTimeMs: 1716700000000
+        productId: "premium_monthly"
+
+    StoreWebhookResponse:
+      type: object
+      required:
+        - eventId
+        - userId
+        - accepted
+      properties:
+        eventId:
+          type: string
+          description: Event identifier (echoed)
+        userId:
+          type: string
+          description: User identifier (echoed)
+        accepted:
+          type: boolean
+          description: True if event was accepted
+        isDuplicate:
+          type: boolean
+          description: True if this is a duplicate of a previously processed event
+        message:
+          type: string
+          description: Human-readable status message
+      example:
+        eventId: "evt_abc123"
+        userId: "u_42"
+        accepted: true
+        isDuplicate: false
+        message: "Event accepted"
+
+    MarketplaceRevokeRequest:
+      type: object
+      required:
+        - userIds
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          maxItems: 10000
+          items:
+            type: string
+            pattern: '^[a-z_][a-z0-9_]*$'
+          description: List of user IDs to revoke marketplace access for
+      example:
+        userIds: ["u_42", "u_91", "u_133"]
+
+    MarketplaceRevokeResponse:
+      type: object
+      required:
+        - accepted
+        - count
+      properties:
+        accepted:
+          type: boolean
+          description: True if revocation request was accepted
+        count:
+          type: integer
+          description: Number of users processed
+        message:
+          type: string
+          description: Human-readable status message
+      example:
+        accepted: true
+        count: 3
+        message: "Revocation accepted"
+
+    EntitlementResponse:
+      type: object
+      required:
+        - active
+        - source
+        - lastChangedAt
+      properties:
+        active:
+          type: boolean
+          description: Whether user is currently premium
+        source:
+          type: string
+          enum:
+            - STORE
+            - CARRIER
+            - MARKETPLACE
+            - NONE
+          description: Primary source of entitlement (highest priority active source)
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 timestamp when entitlement expires (null if no expiration)
+        lastChangedAt:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of last state change
+        reason:
+          type: string
+          nullable: true
+          description: |
+            Reason for current state (e.g., INITIAL_PURCHASE, RENEWAL, CANCELLATION, etc.)
+      example:
+        active: true
+        source: "STORE"
+        expiresAt: "2026-06-10T00:00:00Z"
+        lastChangedAt: "2026-05-20T11:23:00Z"
+        reason: "RENEWAL"
+
+    TimelineEntry:
+      type: object
+      required:
+        - timestamp
+        - source
+        - active
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: When this change occurred
+        source:
+          type: string
+          enum:
+            - STORE
+            - CARRIER
+            - MARKETPLACE
+          description: Which source was affected
+        active:
+          type: boolean
+          description: Whether entitlement became active or inactive
+        reason:
+          type: string
+          nullable: true
+          description: Reason for the change (event type or reason)
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Expiration time after this change
+        triggeringEventId:
+          type: string
+          nullable: true
+          description: ID of the event that triggered this change
+
+    TimelineResponse:
+      type: object
+      required:
+        - userId
+        - entries
+        - total
+        - limit
+        - offset
+      properties:
+        userId:
+          type: string
+          description: User identifier
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimelineEntry'
+          description: List of state changes (newest first)
+        total:
+          type: integer
+          description: Total number of entries available
+        limit:
+          type: integer
+          description: Limit used in query
+        offset:
+          type: integer
+          description: Offset used in query
+      example:
+        userId: "u_42"
+        entries:
+          - timestamp: "2026-05-20T11:23:00Z"
+            source: "STORE"
+            active: true
+            reason: "RENEWAL"
+            expiresAt: "2026-06-10T00:00:00Z"
+            triggeringEventId: "evt_renewal_001"
+          - timestamp: "2026-04-20T10:15:00Z"
+            source: "STORE"
+            active: true
+            reason: "INITIAL_PURCHASE"
+            expiresAt: "2026-05-20T00:00:00Z"
+            triggeringEventId: "evt_purchase_001"
+        total: 2
+        limit: 100
+        offset: 0
+
+    MockCarrierResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - active
+            - inactive
+            - api_error
+          description: Carrier plan status
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - code
+      properties:
+        error:
+          type: string
+          description: Human-readable error message
+        code:
+          type: string
+          description: Machine-readable error code
+        details:
+          type: object
+          nullable: true
+          description: Additional error details
+      example:
+        error: "Invalid event type"
+        code: "INVALID_REQUEST"
+        details:
+          field: "type"
+          value: "INVALID_TYPE"
