@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/example/adora/internal/application"
+	"github.com/example/adora/internal/domain"
 	"github.com/example/adora/internal/infrastructure/postgres"
 )
 
@@ -16,8 +17,8 @@ type PollingWorker struct {
 }
 
 // NewPollingWorker creates a new polling worker.
-func NewPollingWorker(db postgres.Database, logger *slog.Logger) *PollingWorker {
-	service := application.NewCarrierPollingService(db)
+func NewPollingWorker(db postgres.Database, client domain.CarrierClient, logger *slog.Logger) *PollingWorker {
+	service := application.NewCarrierPollingService(db, client)
 	return &PollingWorker{
 		service: service,
 		logger:  logger,

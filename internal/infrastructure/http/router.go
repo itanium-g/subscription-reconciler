@@ -28,8 +28,7 @@ func NewRouter(db postgres.Database, logger *slog.Logger) *Router {
 	marketplaceService := application.NewMarketplaceRevokeService(db)
 	marketplaceHandler := NewMarketplaceRevokeHandler(marketplaceService, logger)
 
-	carrierService := application.NewCarrierPollingService(db)
-	mockCarrierHandler := NewMockCarrierHandler(carrierService, logger)
+	mockCarrierHandler := NewMockCarrierHandler(logger)
 
 	timelineService := application.NewTimelineService(db)
 	timelineHandler := NewTimelineHandler(timelineService, logger)
@@ -42,6 +41,7 @@ func NewRouter(db postgres.Database, logger *slog.Logger) *Router {
 		timelineHandler:          timelineHandler,
 	}
 }
+
 
 // Mount mounts all routes on the chi router.
 func (r *Router) Mount(router chi.Router) {

@@ -8,13 +8,15 @@ import (
 	"syscall"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/example/adora/internal/infrastructure/carrier"
 	"github.com/example/adora/internal/infrastructure/postgres"
 	"github.com/example/adora/internal/infrastructure/worker"
 )
 
 type Config struct {
-	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://postgres:postgres@localhost:5432/adora?sslmode=disable"`
-	LogLevel    string `env:"LOG_LEVEL" envDefault:"info"`
+	DatabaseURL    string `env:"DATABASE_URL"    envDefault:"postgres://postgres:postgres@localhost:5432/adora?sslmode=disable"`
+	LogLevel       string `env:"LOG_LEVEL"       envDefault:"info"`
+	CarrierAPIURL  string `env:"CARRIER_API_URL" envDefault:"http://localhost:8080"`
 }
 
 func main() {
@@ -46,7 +48,8 @@ func main() {
 	logger.InfoContext(ctx, "connected to database")
 
 	// Create workers
-	pollingWorker := worker.NewPollingWorker(db, logger)
+	carrierClient := carrier.NewHTTPClient(cfg.CarrierAPIURL)
+	pollingWorker := worker.NewPollingWorker(db, carrierClient, logger)
 	notificationWorker := worker.NewNotificationWorker(db, logger)
 
 	// Run workers concurrently
