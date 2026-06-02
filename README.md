@@ -143,13 +143,15 @@ Once the application is running, you can test its core and stretch functionality
 **Initial Purchase (Active)**
 Grant premium access to `user_store_1` starting now:
 ```bash
+TIMESTAMP=$(( $(date +%s) * 1000 ))
+
 curl -X POST http://localhost:8080/webhooks/store \
   -H "Content-Type: application/json" \
   -d '{
     "eventId": "evt_store_purchase_001",
     "userId": "user_store_1",
     "type": "INITIAL_PURCHASE",
-    "eventTimeMs": '$(date +%s000)',
+    "eventTimeMs": '$TIMESTAMP',
     "productId": "premium_monthly"
   }'
 ```
@@ -163,22 +165,24 @@ curl -X POST http://localhost:8080/webhooks/store \
     "eventId": "evt_store_purchase_001",
     "userId": "user_store_1",
     "type": "INITIAL_PURCHASE",
-    "eventTimeMs": '$(date +%s000)',
+    "eventTimeMs": '$TIMESTAMP',
     "productId": "premium_monthly"
   }'
 ```
 *(Should return `isDuplicate: true`)*
 
 **Out-of-Order / Late-Arriving Event**
-Simulate a late-arriving event by sending a `BILLING_ISSUE` (which cancels access) timestamped in the past (e.g., 20 seconds ago), after the active purchase:
+Simulate a late-arriving event by calculating a timestamp in the past (e.g. 20 seconds ago) and sending a `BILLING_ISSUE` (which cancels access) after the active purchase:
 ```bash
+TIMESTAMP=$(( ($(date +%s) - 20) * 1000 ))
+
 curl -X POST http://localhost:8080/webhooks/store \
   -H "Content-Type: application/json" \
   -d '{
     "eventId": "evt_store_late_billing_002",
     "userId": "user_store_1",
     "type": "BILLING_ISSUE",
-    "eventTimeMs": '$(( $(date +%s) - 20 ))'000',
+    "eventTimeMs": '$TIMESTAMP',
     "productId": "premium_monthly"
   }'
 ```
