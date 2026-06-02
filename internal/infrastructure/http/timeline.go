@@ -30,7 +30,7 @@ func (h *TimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Reque
 
 	userID := chi.URLParam(r, "userId")
 	if userID == "" {
-		h.respondError(w, http.StatusBadRequest, "MISSING_USER_ID", "User ID is required")
+		respondError(w, http.StatusBadRequest, "MISSING_USER_ID", "User ID is required")
 		return
 	}
 
@@ -51,11 +51,11 @@ func (h *TimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Reque
 
 	// Validate parameters
 	if limit < 1 || limit > 1000 {
-		h.respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "limit must be between 1 and 1000")
+		respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "limit must be between 1 and 1000")
 		return
 	}
 	if offset < 0 {
-		h.respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "offset must be >= 0")
+		respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "offset must be >= 0")
 		return
 	}
 
@@ -63,7 +63,7 @@ func (h *TimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Reque
 	timeline, err := h.service.GetEntitlementTimeline(ctx, userID, limit, offset)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "failed to query timeline", "user_id", userID, "err", err)
-		h.respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to query timeline")
+		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to query timeline")
 		return
 	}
 
@@ -75,15 +75,3 @@ func (h *TimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Reque
 	h.logger.InfoContext(ctx, "timeline queried", "user_id", userID, "entries", len(timeline.Entries), "total", timeline.Total)
 }
 
-// respondError sends an error response.
-func (h *TimelineHandler) respondError(w http.ResponseWriter, statusCode int, code string, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
-	response := map[string]interface{}{
-		"error": message,
-		"code":  code,
-	}
-
-	_ = json.NewEncoder(w).Encode(response)
-}

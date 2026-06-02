@@ -31,7 +31,7 @@ func (h *MockCarrierHandler) HandleGetPlan(w http.ResponseWriter, r *http.Reques
 
 	userID := r.URL.Query().Get("userId")
 	if userID == "" {
-		h.respondError(w, http.StatusBadRequest, "MISSING_USER_ID", "userId query parameter is required")
+		respondError(w, http.StatusBadRequest, "MISSING_USER_ID", "userId query parameter is required")
 		return
 	}
 
@@ -78,8 +78,3 @@ func hashUserID(userID string) uint64 {
 	return h
 }
 
-func (h *MockCarrierHandler) respondError(w http.ResponseWriter, statusCode int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message, "code": code})
-}
