@@ -7,7 +7,7 @@ SELECT id, user_id, source, previous_active, next_active, previous_expires_at, n
 FROM audit_logs
 WHERE user_id = $1
 ORDER BY created_at DESC
-LIMIT $1 OFFSET $2;
+LIMIT $2 OFFSET $3;
 
 -- name: CountAuditLogsByUser :one
 SELECT COUNT(*) as count

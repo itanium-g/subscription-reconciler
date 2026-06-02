@@ -59,11 +59,15 @@ CREATE TABLE notifications (
     scheduled_for TIMESTAMPTZ NOT NULL,
     sent_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    UNIQUE (user_id, type, DATE(scheduled_for)),
+
     CHECK (type IN ('PREMIUM_EXPIRES_SOON')),
     CHECK (sent_at IS NULL OR sent_at >= scheduled_for)
 );
+
+-- One notification per (user_id, type, calendar day) — deduplication guarantee.
+-- Expressed as a unique index so sqlc can parse it (inline DATE() in UNIQUE is not supported by sqlc).
+CREATE UNIQUE INDEX uq_notifications_user_type_day
+    ON notifications (user_id, type, DATE(scheduled_for));
 
 -- Create audit_logs table (stretch feature)
 -- Complete history of entitlement state transitions
