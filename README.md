@@ -336,8 +336,10 @@ curl http://localhost:8080/users/user_store_1/timeline
 │   └── worker/                # Background job runner entrypoint
 ├── internal/
 │   ├── application/           # Service layer & reconciliation business logic
+│   ├── config/                # Shared configuration and helpers
 │   ├── domain/                # Domain entities & types
 │   └── infrastructure/
+│       ├── carrier/           # Carrier API client implementation
 │       ├── http/              # HTTP routers and handlers
 │       ├── postgres/          # SQL repository implementations
 │       └── worker/            # Job polling implementations
