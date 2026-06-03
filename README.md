@@ -319,8 +319,8 @@ curl http://localhost:8080/users/user_store_1/timeline
 
 ### What Would Change with Another Week?
 
-1. **Richer Observability**: Integration with OpenTelemetry (Prometheus/Grafana) to monitor reconciliation latency, webhook queue depths, and error rates.
-2. **Webhook Retry Logic**: Implement an exponential backoff retry strategy for failed webhooks to ensure eventual consistency.
+1. **Richer Observability**: Integration with OpenTelemetry (Prometheus/Grafana) to monitor reconciliation latency, database transaction times, and API error rates.
+2. **Asynchronous Processing**: Introduce an internal message broker (like Redis/RabbitMQ) and a Dead Letter Queue (DLQ) to decouple webhook ingestion from database processing, allowing for `202 Accepted` immediate responses and robust internal retries.
 3. **Carrier API Caching**: Cache recent carrier responses to heavily reduce outbound load during bulk worker polling.
 4. **Rate Limiting**: Defend the webhook ingestion routes with per-user and global rate limiting.
 5. **Payload Verification**: Introduce HMAC signature verification middleware for marketplace webhooks to guarantee authenticity.
