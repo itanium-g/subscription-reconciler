@@ -8,7 +8,8 @@ SELECT id, user_id, type, scheduled_for, sent_at, created_at
 FROM notifications
 WHERE scheduled_for <= NOW() AND sent_at IS NULL
 ORDER BY scheduled_for ASC
-LIMIT $1;
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
 
 -- name: MarkNotificationSent :exec
 UPDATE notifications

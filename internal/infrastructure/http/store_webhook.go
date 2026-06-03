@@ -32,14 +32,14 @@ func (h *StoreWebhookHandler) HandleStoreWebhook(w http.ResponseWriter, r *http.
 	// Read and parse request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Failed to read request body")
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Failed to read request body")
 		return
 	}
 	defer r.Body.Close()
 
 	var payload domain.StoreWebhookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid JSON: "+err.Error())
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid JSON: "+err.Error())
 		return
 	}
 
@@ -50,13 +50,13 @@ func (h *StoreWebhookHandler) HandleStoreWebhook(w http.ResponseWriter, r *http.
 		var domainErr domain.DomainError
 		if errors.As(err, &domainErr) {
 			h.logger.InfoContext(ctx, "validation error", "event_id", payload.EventID, "code", domainErr.Code)
-			h.respondError(w, http.StatusBadRequest, domainErr.Code, domainErr.Message)
+			respondError(w, http.StatusBadRequest, domainErr.Code, domainErr.Message)
 			return
 		}
 
 		// Database or other error
 		h.logger.ErrorContext(ctx, "failed to process webhook", "event_id", payload.EventID, "err", err)
-		h.respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process webhook")
+		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process webhook")
 		return
 	}
 
@@ -73,15 +73,3 @@ func (h *StoreWebhookHandler) HandleStoreWebhook(w http.ResponseWriter, r *http.
 	)
 }
 
-// respondError sends an error response.
-func (h *StoreWebhookHandler) respondError(w http.ResponseWriter, statusCode int, code string, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
-	response := map[string]interface{}{
-		"error": message,
-		"code":  code,
-	}
-
-	_ = json.NewEncoder(w).Encode(response)
-}

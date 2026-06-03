@@ -95,10 +95,10 @@ graph TD
 
 ### Key Features
 
-- **Idempotency**: All external events are deduplicated via the `processed_events` table.
+- **Idempotency**: All external events are deduplicated via atomic constraints. `InsertStoreEvent` and `InsertMarketplaceRevocation` use `ON CONFLICT DO NOTHING` as an atomic gate to prevent race conditions.
 - **Timestamp-based Ordering**: `STORE` events are strictly ordered by `event_time_ms` (from the webhook payload), entirely ignoring arrival time.
-- **Late-Arriving Events**: Safely persisted for auditing but prevented from overwriting newer active states.
-- **Worker Concurrency**: Carrier polling employs PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
+- **Late-Arriving Events**: Safely persisted for auditing but prevented from overwriting newer active states without causing constraint violations.
+- **Worker Concurrency**: Carrier polling and Notification scheduling employ PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
 - **Notification Deduplication**: Database constraints strictly guarantee at most one expiration notification per user per day.
 
 ---
@@ -153,6 +153,19 @@ make run-worker
 ---
 
 ## API Endpoints
+
+### Health Check
+
+Verify the API is running and healthy.
+
+```http
+GET /health
+```
+
+**Response (200 OK):**
+```text
+OK
+```
 
 ### Store Webhook
 
@@ -276,7 +289,7 @@ curl -X POST http://localhost:8080/webhooks/marketplace/revoke \
 
 ### 4. Carrier Polling Mock
 
-Query the mock carrier to observe its randomized outputs:
+Query the mock carrier to observe its randomized outputs. (Note: The mock carrier runs on port 8081 as a lightweight container using `MOCK_CARRIER_MODE=true`).
 ```bash
 curl "http://localhost:8081/mock/carrier/plan?userId=user_carrier_1"
 ```
@@ -306,8 +319,8 @@ curl http://localhost:8080/users/user_store_1/timeline
 
 ### What Would Change with Another Week?
 
-1. **Richer Observability**: Integration with OpenTelemetry (Prometheus/Grafana) to monitor reconciliation latency, webhook queue depths, and error rates.
-2. **Webhook Retry Logic**: Implement an exponential backoff retry strategy for failed webhooks to ensure eventual consistency.
+1. **Richer Observability**: Integration with OpenTelemetry (Prometheus/Grafana) to monitor reconciliation latency, database transaction times, and API error rates.
+2. **Asynchronous Processing**: Introduce an internal message broker (like Redis/RabbitMQ) and a Dead Letter Queue (DLQ) to decouple webhook ingestion from database processing, allowing for `202 Accepted` immediate responses and robust internal retries.
 3. **Carrier API Caching**: Cache recent carrier responses to heavily reduce outbound load during bulk worker polling.
 4. **Rate Limiting**: Defend the webhook ingestion routes with per-user and global rate limiting.
 5. **Payload Verification**: Introduce HMAC signature verification middleware for marketplace webhooks to guarantee authenticity.
@@ -323,8 +336,10 @@ curl http://localhost:8080/users/user_store_1/timeline
 │   └── worker/                # Background job runner entrypoint
 ├── internal/
 │   ├── application/           # Service layer & reconciliation business logic
+│   ├── config/                # Shared configuration and helpers
 │   ├── domain/                # Domain entities & types
 │   └── infrastructure/
+│       ├── carrier/           # Carrier API client implementation
 │       ├── http/              # HTTP routers and handlers
 │       ├── postgres/          # SQL repository implementations
 │       └── worker/            # Job polling implementations

@@ -6,9 +6,9 @@ import "time"
 type EntitlementResponse struct {
 	Active        bool       `json:"active"`
 	Source        string     `json:"source"` // STORE, CARRIER, MARKETPLACE, NONE
-	ExpiresAt     *time.Time `json:"expiresAt"`
+	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	LastChangedAt time.Time  `json:"lastChangedAt"`
-	Reason        *string    `json:"reason"`
+	Reason        *string    `json:"reason,omitempty"`
 }
 
 // SourcePriority defines the priority order for entitlement sources.

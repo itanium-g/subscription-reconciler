@@ -1,6 +1,6 @@
 run:
   timeout: 5m
-  go: '1.23'
+  go: '1.26'
 
 linters:
   enable:
@@ -27,10 +27,9 @@ linters:
     - errname
     - errorlint
     - exhaustive
-    - exportloopref
     - gochecknoglobals
     - gochecknoinits
-    - gocognac
+    - gocognit
     - goconst
     - gocritic
     - gocyclo
@@ -40,15 +39,11 @@ linters:
     - gofumpt
     - goheader
     - goimports
-    - golint
-    - gomnd
     - gomodguard
     - goprintffuncname
     - gosec
-    - goslices
     - gosmopolitan
     - grouper
-    - ifshort
     - importas
     - inamedparam
     - interfacebloat
@@ -69,8 +64,6 @@ linters:
     - nolintlint
     - nonamedreturns
     - nosprintfhostport
-    - nosnowflakeequals
-    - nstmt
     - prealloc
     - predeclared
     - promlinter

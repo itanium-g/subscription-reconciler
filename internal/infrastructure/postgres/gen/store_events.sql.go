@@ -69,9 +69,10 @@ func (q *Queries) GetStoreEventsByUser(ctx context.Context, userID string) ([]St
 	return items, nil
 }
 
-const insertStoreEvent = `-- name: InsertStoreEvent :exec
+const insertStoreEvent = `-- name: InsertStoreEvent :execresult
 INSERT INTO store_events (event_id, user_id, type, event_time_ms, product_id)
 VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (event_id) DO NOTHING
 `
 
 type InsertStoreEventParams struct {
@@ -82,13 +83,12 @@ type InsertStoreEventParams struct {
 	ProductID   sql.NullString
 }
 
-func (q *Queries) InsertStoreEvent(ctx context.Context, arg InsertStoreEventParams) error {
-	_, err := q.db.ExecContext(ctx, insertStoreEvent,
+func (q *Queries) InsertStoreEvent(ctx context.Context, arg InsertStoreEventParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, insertStoreEvent,
 		arg.EventID,
 		arg.UserID,
 		arg.Type,
 		arg.EventTimeMs,
 		arg.ProductID,
 	)
-	return err
 }

@@ -29,7 +29,7 @@ func (h *EntitlementHandler) HandleGetEntitlement(w http.ResponseWriter, r *http
 
 	userID := chi.URLParam(r, "userId")
 	if userID == "" {
-		h.respondError(w, http.StatusBadRequest, "MISSING_USER_ID", "User ID is required")
+		respondError(w, http.StatusBadRequest, "MISSING_USER_ID", "User ID is required")
 		return
 	}
 
@@ -37,7 +37,7 @@ func (h *EntitlementHandler) HandleGetEntitlement(w http.ResponseWriter, r *http
 	entitlement, err := h.service.GetCanonicalEntitlement(ctx, userID)
 	if err != nil {
 		h.logger.ErrorContext(ctx, "failed to query entitlement", "user_id", userID, "err", err)
-		h.respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to query entitlement")
+		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to query entitlement")
 		return
 	}
 
@@ -49,15 +49,3 @@ func (h *EntitlementHandler) HandleGetEntitlement(w http.ResponseWriter, r *http
 	h.logger.InfoContext(ctx, "entitlement queried", "user_id", userID, "source", entitlement.Source, "active", entitlement.Active)
 }
 
-// respondError sends an error response.
-func (h *EntitlementHandler) respondError(w http.ResponseWriter, statusCode int, code string, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
-	response := map[string]interface{}{
-		"error": message,
-		"code":  code,
-	}
-
-	_ = json.NewEncoder(w).Encode(response)
-}

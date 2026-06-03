@@ -1,7 +1,7 @@
 # Build stage
 FROM golang:1.26-alpine AS builder
 
-RUN apk add --no-cache gcc musl-dev
+RUN apk add --no-cache git
 
 WORKDIR /app
 
@@ -12,11 +12,11 @@ COPY . .
 
 # Build API
 FROM builder AS api-builder
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o api ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o api ./cmd/api
 
 # Build Worker
 FROM builder AS worker-builder
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o worker ./cmd/worker
 
 # API runtime
 FROM alpine:latest AS api

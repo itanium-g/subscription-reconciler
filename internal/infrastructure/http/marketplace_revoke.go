@@ -32,14 +32,14 @@ func (h *MarketplaceRevokeHandler) HandleMarketplaceRevoke(w http.ResponseWriter
 	// Read and parse request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Failed to read request body")
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Failed to read request body")
 		return
 	}
 	defer r.Body.Close()
 
 	var request domain.MarketplaceRevokeRequest
 	if err := json.Unmarshal(body, &request); err != nil {
-		h.respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid JSON: "+err.Error())
+		respondError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid JSON: "+err.Error())
 		return
 	}
 
@@ -50,13 +50,13 @@ func (h *MarketplaceRevokeHandler) HandleMarketplaceRevoke(w http.ResponseWriter
 		var domainErr domain.DomainError
 		if errors.As(err, &domainErr) {
 			h.logger.InfoContext(ctx, "validation error", "code", domainErr.Code)
-			h.respondError(w, http.StatusBadRequest, domainErr.Code, domainErr.Message)
+			respondError(w, http.StatusBadRequest, domainErr.Code, domainErr.Message)
 			return
 		}
 
 		// Database or other error
 		h.logger.ErrorContext(ctx, "failed to process revoke", "err", err)
-		h.respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process revoke")
+		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process revoke")
 		return
 	}
 
@@ -71,15 +71,3 @@ func (h *MarketplaceRevokeHandler) HandleMarketplaceRevoke(w http.ResponseWriter
 	)
 }
 
-// respondError sends an error response.
-func (h *MarketplaceRevokeHandler) respondError(w http.ResponseWriter, statusCode int, code string, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
-	response := map[string]interface{}{
-		"error": message,
-		"code":  code,
-	}
-
-	_ = json.NewEncoder(w).Encode(response)
-}

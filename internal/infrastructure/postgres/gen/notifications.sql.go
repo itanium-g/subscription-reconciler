@@ -16,6 +16,7 @@ FROM notifications
 WHERE scheduled_for <= NOW() AND sent_at IS NULL
 ORDER BY scheduled_for ASC
 LIMIT $1
+FOR UPDATE SKIP LOCKED
 `
 
 func (q *Queries) GetDueNotifications(ctx context.Context, limit int32) ([]Notification, error) {

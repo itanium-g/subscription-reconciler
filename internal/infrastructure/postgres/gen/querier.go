@@ -6,6 +6,7 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
@@ -23,8 +24,8 @@ type Querier interface {
 	GetStoreEventByID(ctx context.Context, eventID string) (StoreEvent, error)
 	GetStoreEventsByUser(ctx context.Context, userID string) ([]StoreEvent, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
-	InsertMarketplaceRevocation(ctx context.Context, arg InsertMarketplaceRevocationParams) error
-	InsertStoreEvent(ctx context.Context, arg InsertStoreEventParams) error
+	InsertMarketplaceRevocation(ctx context.Context, arg InsertMarketplaceRevocationParams) (sql.Result, error)
+	InsertStoreEvent(ctx context.Context, arg InsertStoreEventParams) (sql.Result, error)
 	IsEventProcessed(ctx context.Context, arg IsEventProcessedParams) (bool, error)
 	MarkEventProcessed(ctx context.Context, arg MarkEventProcessedParams) error
 	MarkNotificationSent(ctx context.Context, id int64) error

@@ -32,6 +32,11 @@ services:
       migrate:
         condition: service_completed_successfully
     command: /app/api
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   worker:
     build:

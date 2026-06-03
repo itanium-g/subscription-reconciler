@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"database/sql"
 )
 
 const getMarketplaceRevocationByEventID = `-- name: GetMarketplaceRevocationByEventID :one
@@ -27,9 +28,10 @@ func (q *Queries) GetMarketplaceRevocationByEventID(ctx context.Context, eventID
 	return i, err
 }
 
-const insertMarketplaceRevocation = `-- name: InsertMarketplaceRevocation :exec
+const insertMarketplaceRevocation = `-- name: InsertMarketplaceRevocation :execresult
 INSERT INTO marketplace_revocations (event_id, user_id)
 VALUES ($1, $2)
+ON CONFLICT (event_id) DO NOTHING
 `
 
 type InsertMarketplaceRevocationParams struct {
@@ -37,7 +39,6 @@ type InsertMarketplaceRevocationParams struct {
 	UserID  string
 }
 
-func (q *Queries) InsertMarketplaceRevocation(ctx context.Context, arg InsertMarketplaceRevocationParams) error {
-	_, err := q.db.ExecContext(ctx, insertMarketplaceRevocation, arg.EventID, arg.UserID)
-	return err
+func (q *Queries) InsertMarketplaceRevocation(ctx context.Context, arg InsertMarketplaceRevocationParams) (sql.Result, error) {
+	return q.db.ExecContext(ctx, insertMarketplaceRevocation, arg.EventID, arg.UserID)
 }
