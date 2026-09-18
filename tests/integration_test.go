@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"github.com/example/subscription-reconciler/internal/application"
 	"github.com/example/subscription-reconciler/internal/domain"
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
+	workerinfra "github.com/example/subscription-reconciler/internal/infrastructure/worker"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -111,6 +114,7 @@ func TestMain(m *testing.M) {
 		"../migrations/002_add_indexes.up.sql",
 		"../migrations/003_add_carrier_polling.up.sql",
 		"../migrations/004_fix_expires_at_constraint.up.sql",
+		"../migrations/005_fix_user_entitlements_check_constraint.up.sql",
 	}
 
 	for _, file := range migrationFiles {
@@ -258,6 +262,160 @@ func TestLateArrivingStoreEvents(t *testing.T) {
 	ent, err = queryService.GetCanonicalEntitlement(ctx, userID)
 	require.NoError(t, err)
 	require.False(t, ent.Active)
+}
+
+// TestEntitlementExpirationFallback verifies that an expired high-priority
+// source does not hide a currently active lower-priority source.
+func TestEntitlementExpirationFallback(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	queryService := application.NewEntitlementQueryService(testDB)
+	userID := "user_expiration_fallback"
+
+	expiredAt := time.Now().Add(-time.Hour)
+	reason := string(domain.EventTypeRenewal)
+	_, err := testDB.UpsertEntitlement(ctx, userID, "STORE", true, &expiredAt, &reason, expiredAt.Add(-time.Hour).UnixMilli(), nil)
+	require.NoError(t, err)
+
+	_, err = testDB.UpsertEntitlement(ctx, userID, "CARRIER", true, nil, nil, time.Now().UnixMilli(), nil)
+	require.NoError(t, err)
+
+	entitlement, err := queryService.GetCanonicalEntitlement(ctx, userID)
+	require.NoError(t, err)
+	require.True(t, entitlement.Active)
+	require.Equal(t, "CARRIER", entitlement.Source)
+}
+
+// TestExpirationWorkerReconciliation verifies expiration projection updates,
+// audit details, and renewal ordering after the worker has run.
+func TestExpirationWorkerReconciliation(t *testing.T) {
+	cleanDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	userID := "user_expiration_worker"
+
+	expiredAt := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+	reason := string(domain.EventTypeRenewal)
+	_, err := testDB.UpsertEntitlement(ctx, userID, "STORE", true, &expiredAt, &reason, expiredAt.Add(-time.Hour).UnixMilli(), nil)
+	require.NoError(t, err)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	expirationWorker := workerinfra.NewExpirationWorker(testDB, logger)
+	done := make(chan struct{})
+	go func() {
+		expirationWorker.StartExpirationReconciliation(ctx)
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool {
+		entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+		return err == nil && entitlement != nil && !entitlement.Active
+	}, 5*time.Second, 10*time.Millisecond)
+
+	entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+	require.NoError(t, err)
+	require.Equal(t, expiredAt.UnixMilli(), entitlement.LastEventTime)
+
+	renewalEventTime := expiredAt.Add(time.Minute)
+	_, err = application.NewStoreWebhookService(testDB).ProcessStoreWebhook(ctx, &domain.StoreWebhookPayload{
+		EventID:     "event_expiration_renewal",
+		UserID:      userID,
+		Type:        string(domain.EventTypeRenewal),
+		EventTimeMs: renewalEventTime.UnixMilli(),
+		ProductID:   "premium_1_month",
+	})
+	require.NoError(t, err)
+
+	entitlement, err = testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+	require.NoError(t, err)
+	require.True(t, entitlement.Active)
+	require.Equal(t, renewalEventTime.UnixMilli(), entitlement.LastEventTime)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expiration worker did not stop after context cancellation")
+	}
+
+	auditLogs, err := testDB.GetAuditLogsByUser(context.Background(), userID, 100, 0)
+	require.NoError(t, err)
+	var expirationLog *postgres.AuditLog
+	for i := range auditLogs {
+		if auditLogs[i].Reason != nil && *auditLogs[i].Reason == "EXPIRATION" {
+			expirationLog = &auditLogs[i]
+			break
+		}
+	}
+	require.NotNil(t, expirationLog)
+	require.NotNil(t, expirationLog.PreviousActive)
+	require.True(t, *expirationLog.PreviousActive)
+	require.False(t, expirationLog.NextActive)
+}
+
+// TestConcurrentExpirationWorkers verifies that concurrent workers claim each
+// expired row once and do not duplicate its audit transition.
+func TestConcurrentExpirationWorkers(t *testing.T) {
+	cleanDB(t)
+	setupCtx := context.Background()
+	const userCount = 20
+	for i := range userCount {
+		userID := fmt.Sprintf("user_expiration_concurrent_%d", i)
+		expiredAt := time.Now().Add(-time.Hour).Truncate(time.Millisecond)
+		reason := string(domain.EventTypeRenewal)
+		_, err := testDB.UpsertEntitlement(setupCtx, userID, "STORE", true, &expiredAt, &reason, expiredAt.Add(-time.Hour).UnixMilli(), nil)
+		require.NoError(t, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	workers := []*workerinfra.ExpirationWorker{
+		workerinfra.NewExpirationWorker(testDB, logger),
+		workerinfra.NewExpirationWorker(testDB, logger),
+	}
+	done := make(chan struct{}, len(workers))
+	for _, expirationWorker := range workers {
+		go func() {
+			expirationWorker.StartExpirationReconciliation(ctx)
+			done <- struct{}{}
+		}()
+	}
+
+	require.Eventually(t, func() bool {
+		for i := range userCount {
+			userID := fmt.Sprintf("user_expiration_concurrent_%d", i)
+			entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+			if err != nil || entitlement == nil || entitlement.Active {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
+
+	cancel()
+	for range workers {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("expiration worker did not stop after context cancellation")
+		}
+	}
+
+	for i := range userCount {
+		userID := fmt.Sprintf("user_expiration_concurrent_%d", i)
+		auditLogs, err := testDB.GetAuditLogsByUser(context.Background(), userID, 100, 0)
+		require.NoError(t, err)
+		expirationCount := 0
+		for _, auditLog := range auditLogs {
+			if auditLog.Reason != nil && *auditLog.Reason == "EXPIRATION" {
+				expirationCount++
+				require.NotNil(t, auditLog.PreviousActive)
+				require.True(t, *auditLog.PreviousActive)
+				require.False(t, auditLog.NextActive)
+			}
+		}
+		require.Equal(t, 1, expirationCount, userID)
+	}
 }
 
 // TestMarketplaceIsolation tests marketplace revoke only affects MARKETPLACE source.

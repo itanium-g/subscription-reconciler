@@ -11,12 +11,14 @@ import (
 
 type Querier interface {
 	CountAuditLogsByUser(ctx context.Context, userID string) (int64, error)
+	ExpireEntitlement(ctx context.Context, arg ExpireEntitlementParams) (int64, error)
 	GetAuditLogsByUser(ctx context.Context, arg GetAuditLogsByUserParams) ([]AuditLog, error)
 	GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]UserEntitlement, error)
 	GetDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	GetEntitlementByUserAndSource(ctx context.Context, arg GetEntitlementByUserAndSourceParams) (UserEntitlement, error)
 	GetEntitlementsByUser(ctx context.Context, userID string) ([]UserEntitlement, error)
 	GetEntitlementsExpiringWithin24h(ctx context.Context) ([]UserEntitlement, error)
+	GetExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]UserEntitlement, error)
 	GetLastEventTimeFromStore(ctx context.Context, userID string) (interface{}, error)
 	GetMarketplaceRevocationByEventID(ctx context.Context, eventID string) (MarketplaceRevocation, error)
 	GetNotificationByUserTypeAndDate(ctx context.Context, arg GetNotificationByUserTypeAndDateParams) (Notification, error)
@@ -27,6 +29,7 @@ type Querier interface {
 	InsertMarketplaceRevocation(ctx context.Context, arg InsertMarketplaceRevocationParams) (sql.Result, error)
 	InsertStoreEvent(ctx context.Context, arg InsertStoreEventParams) (sql.Result, error)
 	IsEventProcessed(ctx context.Context, arg IsEventProcessedParams) (bool, error)
+	ListExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]UserEntitlement, error)
 	MarkEventProcessed(ctx context.Context, arg MarkEventProcessedParams) error
 	MarkNotificationSent(ctx context.Context, id int64) error
 	ScheduleNotification(ctx context.Context, arg ScheduleNotificationParams) error

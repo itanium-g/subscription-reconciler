@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/caarlos0/env/v11"
@@ -52,15 +53,27 @@ func main() {
 	carrierClient := carrier.NewHTTPClient(cfg.CarrierAPIURL)
 	pollingWorker := worker.NewPollingWorker(db, carrierClient, logger)
 	notificationWorker := worker.NewNotificationWorker(db, logger)
+	expirationWorker := worker.NewExpirationWorker(db, logger)
 
 	// Run workers concurrently
-	go pollingWorker.StartCarrierPolling(ctx)
-	go notificationWorker.StartNotificationSending(ctx)
+	var workers sync.WaitGroup
+	workers.Add(3)
+	go func() {
+		defer workers.Done()
+		pollingWorker.StartCarrierPolling(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		notificationWorker.StartNotificationSending(ctx)
+	}()
+	go func() {
+		defer workers.Done()
+		expirationWorker.StartExpirationReconciliation(ctx)
+	}()
 
 	// Wait for context cancellation
 	<-ctx.Done()
+	workers.Wait()
 
 	logger.InfoContext(ctx, "worker stopped")
 }
-
-

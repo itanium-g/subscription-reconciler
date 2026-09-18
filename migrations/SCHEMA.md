@@ -25,7 +25,7 @@ The schema is built on a **hybrid event-sourcing model**:
 
 **Constraints**:
 - `source IN ('STORE', 'CARRIER', 'MARKETPLACE')`
-- `expires_at > updated_at` (Logical integrity)
+- Expired timestamps may remain in the projection until reconciliation; the read path treats `expires_at <= NOW()` as inactive.
 
 **Indexes**:
 - `idx_user_entitlements_user_id` — Optimizes reads by user.
@@ -108,6 +108,21 @@ The schema is built on a **hybrid event-sourcing model**:
 - Captures `previous_active` / `next_active` and `previous_expires_at` / `next_expires_at`.
 - Interwoven seamlessly into the same PostgreSQL transaction as `user_entitlements` updates.
 
+### Expiration reconciliation query
+
+`GetExpiredEntitlementsForReconciliation` selects a bounded batch where
+`active = TRUE`, `expires_at IS NOT NULL`, and `expires_at <= NOW()`. It orders
+by `expires_at` and uses `FOR UPDATE SKIP LOCKED`, allowing concurrent
+expiration workers to claim different rows without waiting. The PostgreSQL
+client holds those locks through the projection update and the corresponding
+`EXPIRATION` audit insert before committing.
+
+The scan is covered by `idx_user_entitlements_expires_at`, a partial index for
+`active = TRUE AND expires_at IS NOT NULL`. Reconciled rows leave that index
+when they become inactive. `last_event_time` is set to the row's
+`expires_at.UnixMilli()` value, preserving ordering for a renewal webhook that
+arrives after the worker runs.
+
 ---
 
 ## Migration Strategy
@@ -117,6 +132,8 @@ Migrations are executed via `migrate/migrate` automatically during initializatio
 1. **`001_initial_schema.up.sql`**: Initializes core tables, immutable constraint indexes, and idempotency checks.
 2. **`002_add_indexes.up.sql`**: Injects optimal lookup paths for high-frequency queries (e.g., locating expired users).
 3. **`003_add_carrier_polling.up.sql`**: Modifies the entitlement projection for carrier polling metadata.
+4. **`004_fix_expires_at_constraint.up.sql`**: Preserves the existing migration that removes the late-event expiration constraint.
+5. **`005_fix_user_entitlements_check_constraint.up.sql`**: Removes the alternate legacy constraint name when it is still present in an existing environment.
 
 ---
 
@@ -129,6 +146,9 @@ Migrations are executed via `migrate/migrate` automatically during initializatio
 ### Carrier Polling Concurrency
 - **Zero-Collision Polling**: Employs `FOR UPDATE SKIP LOCKED`. Worker instances immediately lock a batch of rows; neighboring concurrent workers dynamically skip these rows and poll the next available batch.
 
+### Expiration Reconciliation Concurrency
+- **Zero-Collision Expiration Sweeps**: The expiration claim locks only expired active rows with `FOR UPDATE SKIP LOCKED`. The worker updates and audits the locked batch before committing, so concurrent workers cannot create duplicate expiration transitions.
+
 ---
 
 ## Performance Characteristics
@@ -137,6 +157,7 @@ Migrations are executed via `migrate/migrate` automatically during initializatio
 |-----------------|----------------|------------|
 | Fetch user entitlements | `idx_user_entitlements_user_id` | `O(log n)` |
 | Locate expiring users | `idx_user_entitlements_expires_at` | `O(log n)` |
+| Locate expired entitlements for reconciliation | `idx_user_entitlements_expires_at` | `O(log n)` |
 | Identify carrier poll targets | `idx_user_entitlements_carrier_polled` | `O(log n)` |
 | Retrieve due notifications | `idx_notifications_scheduled_for` | `O(log n)` |
 | Construct user audit trail | `idx_audit_logs_user_id` | `O(log n)` |

@@ -41,7 +41,7 @@ func (s *marketplaceRevokeService) RevokeMarketplaceAccess(ctx context.Context, 
 	for _, userID := range request.UserIDs {
 		// Use YYYY-MM as the idempotency key for the monthly bulk request
 		eventID := fmt.Sprintf("marketplace_revoke_%s_%s", userID, batchTS.Format("2006-01"))
-		
+
 		// Record the revocation in the immutable history table.
 		// ON CONFLICT (event_id) DO NOTHING acts as our idempotency gate.
 		inserted, err := s.db.InsertMarketplaceRevocation(ctx, eventID, userID)

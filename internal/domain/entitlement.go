@@ -13,6 +13,16 @@ type Entitlement struct {
 	LastEventTime int64
 }
 
+// IsActive reports whether this entitlement grants access at the supplied
+// point in time. Expiration is exclusive: access ends at expires_at itself.
+func (e Entitlement) IsActive(at time.Time) bool {
+	if !e.Active {
+		return false
+	}
+
+	return e.ExpiresAt == nil || e.ExpiresAt.After(at)
+}
+
 // Source represents where the entitlement comes from.
 type Source string
 

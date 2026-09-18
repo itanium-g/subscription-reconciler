@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"time"
 
 	"github.com/example/subscription-reconciler/internal/domain"
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
@@ -41,12 +42,19 @@ func (s *entitlementQueryService) GetCanonicalEntitlement(ctx context.Context, u
 	// Find the highest-priority active entitlement
 	var bestEntitlement *postgres.Entitlement
 	var bestPriority int
+	now := time.Now()
 
 	for i, ent := range entitlements {
 		priority := domain.SourcePriority[ent.Source]
 
-		// Only consider active entitlements
-		if ent.Active && priority > bestPriority {
+		// The expiration worker is eventually consistent. Resolve against the
+		// current time as well as the persisted active flag so an expired
+		// higher-priority source cannot hide a valid lower-priority source.
+		current := domain.Entitlement{
+			Active:    ent.Active,
+			ExpiresAt: ent.ExpiresAt,
+		}
+		if current.IsActive(now) && priority > bestPriority {
 			bestEntitlement = &entitlements[i]
 			bestPriority = priority
 		}

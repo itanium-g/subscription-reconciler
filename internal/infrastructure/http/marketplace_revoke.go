@@ -70,4 +70,3 @@ func (h *MarketplaceRevokeHandler) HandleMarketplaceRevoke(w http.ResponseWriter
 		"message", result.Message,
 	)
 }
-
