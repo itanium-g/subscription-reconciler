@@ -21,7 +21,7 @@ The schema is built on a **hybrid event-sourcing model**:
   - `expires_at (TIMESTAMPTZ)`: Denotes when this source's grant expires (nullable).
   - `last_event_time (BIGINT)`: Timestamp of the last event that modified this row (critical for state ordering).
   - `updated_at (TIMESTAMPTZ)`: Record modification timestamp.
-  - `carrier_polled_at (TIMESTAMPTZ)`: Tracks the last carrier API poll (specific to `source = 'CARRIER'`).
+  - `carrier_polled_at (TIMESTAMPTZ)`: Tracks when a carrier row was most recently claimed for polling (specific to `source = 'CARRIER'`). Claims advance this value before the API request so errors are retried after the staleness window rather than on every drain iteration.
 
 **Constraints**:
 - `source IN ('STORE', 'CARRIER', 'MARKETPLACE')`
@@ -30,7 +30,13 @@ The schema is built on a **hybrid event-sourcing model**:
 **Indexes**:
 - `idx_user_entitlements_user_id` — Optimizes reads by user.
 - `idx_user_entitlements_expires_at` — Optimizes locating expiring entitlements for notifications.
-- `idx_user_entitlements_carrier_polled` — Optimizes background worker polling queries.
+- `idx_user_entitlements_carrier_polled` — Partial index on `carrier_polled_at` for active `CARRIER` rows; supports the due-time scan and ordering used by carrier polling.
+
+### Carrier polling claims
+
+`ClaimDueCarrierEntitlements` runs in a transaction and uses one data-modifying CTE. Its candidate selection filters `source = 'CARRIER'`, `active = TRUE`, and `(carrier_polled_at IS NULL OR carrier_polled_at <= $due_before)`, orders by oldest/null poll time, applies the batch limit, and locks rows with `FOR UPDATE SKIP LOCKED`. The outer `UPDATE ... RETURNING` sets `carrier_polled_at = NOW()` for every selected row in the same statement; there is no per-user timestamp update. The partial `idx_user_entitlements_carrier_polled` index matches the active carrier predicate and is available to the due-time scan.
+
+The worker uses a five-minute `due_before` cutoff and drains batches until one is shorter than the configured batch size. Committing the claim before API calls releases row locks while the new timestamps prevent another worker from claiming those same users. Context cancellation stops additional batches and cancels in-flight carrier HTTP requests.
 
 **Example Data**:
 

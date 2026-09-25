@@ -467,21 +467,33 @@ type mockCarrierClient struct {
 	statusMap map[string]domain.CarrierPlanStatus
 	errMap    map[string]error
 	polled    map[string]int
+	delay     time.Duration
 }
 
-func (m *mockCarrierClient) GetPlanStatus(userID string) (domain.CarrierPlanStatus, error) {
+func (m *mockCarrierClient) GetPlanStatus(ctx context.Context, userID string) (domain.CarrierPlanStatus, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.polled == nil {
 		m.polled = make(map[string]int)
 	}
 	m.polled[userID]++
+	err := m.errMap[userID]
+	status, hasStatus := m.statusMap[userID]
+	delay := m.delay
+	m.mu.Unlock()
 
-	if err, exists := m.errMap[userID]; exists {
+	if delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return domain.CarrierStatusAPIError, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	if err != nil {
 		return domain.CarrierStatusAPIError, err
 	}
-	if status, exists := m.statusMap[userID]; exists {
+	if hasStatus {
 		return status, nil
 	}
 	return domain.CarrierStatusActive, nil
@@ -491,6 +503,16 @@ func (m *mockCarrierClient) getPolledCount(userID string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.polled[userID]
+}
+
+func (m *mockCarrierClient) totalPolled() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := 0
+	for _, count := range m.polled {
+		total += count
+	}
+	return total
 }
 
 // TestCarrierInactiveHandling tests carrier inactive status.
@@ -514,7 +536,7 @@ func TestCarrierInactiveHandling(t *testing.T) {
 	service := application.NewCarrierPollingService(testDB, mockClient)
 
 	// 3. Poll
-	processed, err := service.PollCarriersForUsers(ctx, 10)
+	processed, err := service.PollCarriersForUsers(ctx, 10, time.Now().Add(-5*time.Minute))
 	require.NoError(t, err)
 	require.Equal(t, int32(1), processed)
 
@@ -545,10 +567,10 @@ func TestCarrierAPIErrorHandling(t *testing.T) {
 
 	service := application.NewCarrierPollingService(testDB, mockClient)
 
-	// 3. Poll (it should not process it as change, but skip updates on API error)
-	processed, err := service.PollCarriersForUsers(ctx, 10)
+	// 3. Poll; failed requests count as attempts but skip entitlement updates.
+	processed, err := service.PollCarriersForUsers(ctx, 10, time.Now().Add(-5*time.Minute))
 	require.NoError(t, err)
-	require.Equal(t, int32(0), processed)
+	require.Equal(t, int32(1), processed)
 
 	// 4. Verify entitlement remains active
 	ent, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "CARRIER")
@@ -751,46 +773,141 @@ func TestNotificationWorkerBacklogDraining(t *testing.T) {
 	}, 15*time.Second, 20*time.Millisecond)
 }
 
-// TestConcurrentCarrierWorkers tests multiple workers don't double-poll users.
+// TestConcurrentCarrierWorkers verifies carrier worker instances divide a
+// shared backlog without polling any user twice.
 func TestConcurrentCarrierWorkers(t *testing.T) {
 	cleanDB(t)
 	ctx := context.Background()
-	now := time.Now().UnixMilli()
-
-	// Create 15 carrier users
-	userIDs := []string{
-		"cc_user_1", "cc_user_2", "cc_user_3", "cc_user_4", "cc_user_5",
-		"cc_user_6", "cc_user_7", "cc_user_8", "cc_user_9", "cc_user_10",
-		"cc_user_11", "cc_user_12", "cc_user_13", "cc_user_14", "cc_user_15",
-	}
-	for _, u := range userIDs {
-		_, err := testDB.UpsertEntitlement(ctx, u, "CARRIER", true, nil, nil, now, nil)
-		require.NoError(t, err)
-	}
-
-	mockClient := &mockCarrierClient{}
-	service := application.NewCarrierPollingService(testDB, mockClient)
-
-	// Run multiple polling cycles in concurrent goroutines (each fetches 5 users)
+	const userCount = 205
 	const numWorkers = 3
-	errChan := make(chan error, numWorkers)
+	insertCarrierEntitlements(t, ctx, userCount, "cc_user_")
 
-	for i := 0; i < numWorkers; i++ {
-		go func() {
-			_, err := service.PollCarriersForUsers(ctx, 5)
-			errChan <- err
-		}()
+	mockClient := &mockCarrierClient{delay: time.Millisecond}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{}, numWorkers)
+	start := make(chan struct{})
+	workers := make([]*workerinfra.PollingWorker, 0, numWorkers)
+	for range numWorkers {
+		workers = append(workers, workerinfra.NewPollingWorker(testDB, mockClient, logger))
+	}
+	defer func() {
+		cancel()
+		for range numWorkers {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("carrier worker did not stop after context cancellation")
+			}
+		}
+	}()
+
+	for _, pollingWorker := range workers {
+		go func(w *workerinfra.PollingWorker) {
+			<-start
+			w.StartCarrierPolling(workerCtx)
+			done <- struct{}{}
+		}(pollingWorker)
+	}
+	close(start)
+
+	require.Eventually(t, func() bool { return mockClient.totalPolled() >= userCount }, 15*time.Second, 20*time.Millisecond)
+
+	for i := range userCount {
+		userID := fmt.Sprintf("cc_user_%d", i+1)
+		require.Equal(t, 1, mockClient.getPolledCount(userID), "user %s should be polled exactly once", userID)
+	}
+}
+
+// TestCarrierWorkerBacklogDraining verifies a worker drains multiple complete
+// batches and the final partial batch during one startup cycle.
+func TestCarrierWorkerBacklogDraining(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	const userCount = 201
+	insertCarrierEntitlements(t, ctx, userCount, "carrier_backlog_")
+
+	mockClient := &mockCarrierClient{delay: time.Millisecond}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	worker := workerinfra.NewPollingWorker(testDB, mockClient, logger)
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("carrier worker did not stop after context cancellation")
+		}
+	}()
+
+	go func() {
+		worker.StartCarrierPolling(workerCtx)
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool { return mockClient.totalPolled() == userCount }, 15*time.Second, 20*time.Millisecond)
+	for i := range userCount {
+		userID := fmt.Sprintf("carrier_backlog_%d", i+1)
+		require.Equal(t, 1, mockClient.getPolledCount(userID), "user %s should be polled exactly once", userID)
+	}
+}
+
+func TestCarrierWorkerCancellation(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	const userID = "carrier_cancel_user"
+	createTestEntitlement(t, testDB, ctx, userID, "CARRIER", true)
+	initialAudits, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+
+	mockClient := &mockCarrierClient{delay: 30 * time.Second}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	worker := workerinfra.NewPollingWorker(testDB, mockClient, logger)
+	go func() {
+		worker.StartCarrierPolling(workerCtx)
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("carrier worker did not stop after context cancellation")
+		}
+	}()
+
+	require.Eventually(t, func() bool { return mockClient.totalPolled() == 1 }, 5*time.Second, 10*time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("carrier worker did not stop promptly after context cancellation")
 	}
 
-	for i := 0; i < numWorkers; i++ {
-		err := <-errChan
-		require.NoError(t, err)
-	}
+	entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "CARRIER")
+	require.NoError(t, err)
+	require.NotNil(t, entitlement)
+	require.True(t, entitlement.Active)
+	finalAudits, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, initialAudits, finalAudits)
+}
 
-	// Verify each user was polled exactly once across all workers
-	for _, u := range userIDs {
-		require.Equal(t, 1, mockClient.getPolledCount(u), "User %s should have been polled exactly once", u)
-	}
+func insertCarrierEntitlements(t *testing.T, ctx context.Context, count int, userPrefix string) {
+	t.Helper()
+	dbConn, err := sql.Open("pgx", pgContainer.dsn)
+	require.NoError(t, err)
+	defer dbConn.Close()
+
+	_, err = dbConn.ExecContext(ctx, `
+		INSERT INTO user_entitlements (user_id, source, active)
+		SELECT $1 || i::text, 'CARRIER', TRUE
+		FROM generate_series(1, $2::int) AS series(i)
+	`, userPrefix, count)
+	require.NoError(t, err)
 }
 
 // Helper function for creating test data

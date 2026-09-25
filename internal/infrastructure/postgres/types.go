@@ -72,11 +72,16 @@ type EntitlementRepository interface {
 	GetEntitlementByUserAndSource(ctx context.Context, userID string, source string) (*Entitlement, error)
 	GetEntitlementsByUser(ctx context.Context, userID string) ([]Entitlement, error)
 	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error)
-	UpdateEntitlementCarrierPolledAt(ctx context.Context, userID string, source string) error
 	GetLastEventTimeFromStore(ctx context.Context, userID string) (int64, error)
 	GetEntitlementsExpiringWithin24h(ctx context.Context) ([]Entitlement, error)
 	GetExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]Entitlement, error)
-	GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]Entitlement, error)
+}
+
+// CarrierPollingRepository claims due carrier entitlements and records actual
+// entitlement state transitions.
+type CarrierPollingRepository interface {
+	ClaimDueCarrierEntitlements(ctx context.Context, limit int32, dueBefore time.Time) ([]Entitlement, error)
+	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error)
 }
 
 // ExpirationReconciler performs an atomic, locked expiration sweep.
@@ -123,6 +128,7 @@ type AuditLogRepository interface {
 // Database wraps all repository interfaces.
 type Database interface {
 	EntitlementRepository
+	CarrierPollingRepository
 	StoreEventRepository
 	MarketplaceRevocationRepository
 	ProcessedEventRepository

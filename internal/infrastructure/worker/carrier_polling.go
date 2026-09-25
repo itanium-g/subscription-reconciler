@@ -10,6 +10,12 @@ import (
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 )
 
+const (
+	carrierPollingInterval        = 5 * time.Minute
+	carrierPollingStaleness       = 5 * time.Minute
+	carrierPollingBatchSize int32 = 100
+)
+
 // PollingWorker runs background polling jobs.
 type PollingWorker struct {
 	service application.CarrierPollingService
@@ -27,10 +33,10 @@ func NewPollingWorker(db postgres.Database, client domain.CarrierClient, logger 
 
 // StartCarrierPolling starts the carrier polling job (every 5 minutes).
 func (w *PollingWorker) StartCarrierPolling(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute)
+	ticker := time.NewTicker(carrierPollingInterval)
 	defer ticker.Stop()
 
-	w.logger.InfoContext(ctx, "carrier polling worker started", "interval", "5 minutes")
+	w.logger.InfoContext(ctx, "carrier polling worker started", "interval", carrierPollingInterval.String(), "staleness", carrierPollingStaleness.String(), "batch_size", carrierPollingBatchSize)
 
 	// Run immediately on startup
 	w.pollOnce(ctx)
@@ -50,12 +56,25 @@ func (w *PollingWorker) StartCarrierPolling(ctx context.Context) {
 // pollOnce runs a single polling cycle.
 func (w *PollingWorker) pollOnce(ctx context.Context) {
 	startTime := time.Now()
+	var processed int32
 
-	// Poll up to 100 users per cycle
-	processed, err := w.service.PollCarriersForUsers(ctx, 100)
-	if err != nil {
-		w.logger.ErrorContext(ctx, "carrier polling error", "err", err, "duration", time.Since(startTime))
-		return
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+
+		batchProcessed, err := w.service.PollCarriersForUsers(ctx, carrierPollingBatchSize, time.Now().Add(-carrierPollingStaleness))
+		if err != nil {
+			if ctx.Err() == nil {
+				w.logger.ErrorContext(ctx, "carrier polling error", "err", err, "processed", processed, "duration", time.Since(startTime))
+			}
+			return
+		}
+
+		processed += batchProcessed
+		if batchProcessed < carrierPollingBatchSize {
+			break
+		}
 	}
 
 	w.logger.InfoContext(ctx, "carrier polling cycle completed", "processed", processed, "duration", time.Since(startTime))

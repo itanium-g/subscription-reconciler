@@ -1,9 +1,12 @@
 package carrier
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/example/subscription-reconciler/internal/domain"
@@ -30,13 +33,25 @@ func NewHTTPClient(baseURL string) *HTTPClient {
 // GetPlanStatus calls GET /mock/carrier/plan?userId=<userID> and returns the
 // carrier plan status. A non-200 response is treated as api_error so the
 // caller preserves the existing entitlement rather than revoking access.
-func (c *HTTPClient) GetPlanStatus(userID string) (domain.CarrierPlanStatus, error) {
-	url := fmt.Sprintf("%s/mock/carrier/plan?userId=%s", c.baseURL, userID)
+func (c *HTTPClient) GetPlanStatus(ctx context.Context, userID string) (domain.CarrierPlanStatus, error) {
+	endpoint, err := url.Parse(c.baseURL)
+	if err != nil {
+		return domain.CarrierStatusAPIError, fmt.Errorf("carrier: parse base URL: %w", err)
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/mock/carrier/plan"
+	query := endpoint.Query()
+	query.Set("userId", userID)
+	endpoint.RawQuery = query.Encode()
+	requestURL := endpoint.String()
 
-	resp, err := c.httpClient.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return domain.CarrierStatusAPIError, fmt.Errorf("carrier: create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		// Network failure: treat as api_error
-		return domain.CarrierStatusAPIError, fmt.Errorf("carrier: GET %s: %w", url, err)
+		return domain.CarrierStatusAPIError, fmt.Errorf("carrier: GET %s: %w", requestURL, err)
 	}
 	defer resp.Body.Close()
 

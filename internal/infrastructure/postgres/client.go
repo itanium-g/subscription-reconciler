@@ -143,13 +143,6 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 	return true, nil
 }
 
-func (c *Client) UpdateEntitlementCarrierPolledAt(ctx context.Context, userID string, source string) error {
-	return c.queries.UpdateEntitlementCarrierPolledAt(ctx, gen.UpdateEntitlementCarrierPolledAtParams{
-		UserID: userID,
-		Source: source,
-	})
-}
-
 func (c *Client) GetLastEventTimeFromStore(ctx context.Context, userID string) (int64, error) {
 	v, err := c.queries.GetLastEventTimeFromStore(ctx, userID)
 	if err != nil {
@@ -259,7 +252,7 @@ func (c *Client) ReconcileExpiredEntitlements(ctx context.Context, limit int32) 
 	return reconciled, nil
 }
 
-func (c *Client) GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]Entitlement, error) {
+func (c *Client) ClaimDueCarrierEntitlements(ctx context.Context, limit int32, dueBefore time.Time) ([]Entitlement, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -268,7 +261,10 @@ func (c *Client) GetCarrierEntitlementsForPolling(ctx context.Context, limit int
 
 	q := c.queries.WithTx(tx)
 
-	rows, err := q.GetCarrierEntitlementsForPolling(ctx, limit)
+	rows, err := q.ClaimDueCarrierEntitlements(ctx, gen.ClaimDueCarrierEntitlementsParams{
+		BatchLimit: limit,
+		DueBefore:  sql.NullTime{Time: dueBefore, Valid: true},
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -276,14 +272,6 @@ func (c *Client) GetCarrierEntitlementsForPolling(ctx context.Context, limit int
 	out := make([]Entitlement, len(rows))
 	for i, r := range rows {
 		out[i] = *entitlementFromGen(r)
-
-		err = q.UpdateEntitlementCarrierPolledAt(ctx, gen.UpdateEntitlementCarrierPolledAtParams{
-			UserID: r.UserID,
-			Source: "CARRIER",
-		})
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	if err := tx.Commit(); err != nil {

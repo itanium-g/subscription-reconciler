@@ -26,7 +26,7 @@ Manages the mutable projection representing a user's canonical state:
 - `GetEntitlementByUserAndSource`: Resolves a specific state.
 - `GetEntitlementsByUser`: Fetch all active sources for multi-source conflict resolution.
 - `UpsertEntitlement`: UPSERT the latest state transition.
-- `GetCarrierEntitlementsForPolling`: Thread-safe fetch utilizing `FOR UPDATE SKIP LOCKED`.
+- `ClaimDueCarrierEntitlements`: Atomically claims due active carrier rows with `FOR UPDATE SKIP LOCKED` and advances their poll timestamps as one batch.
 
 ### `store_events.sql`
 Manages the immutable ledger of App Store payloads:

@@ -10,11 +10,11 @@ import (
 )
 
 type Querier interface {
+	ClaimDueCarrierEntitlements(ctx context.Context, arg ClaimDueCarrierEntitlementsParams) ([]UserEntitlement, error)
+	ClaimDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	CountAuditLogsByUser(ctx context.Context, userID string) (int64, error)
 	ExpireEntitlement(ctx context.Context, arg ExpireEntitlementParams) (int64, error)
 	GetAuditLogsByUser(ctx context.Context, arg GetAuditLogsByUserParams) ([]AuditLog, error)
-	GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]UserEntitlement, error)
-	ClaimDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	GetDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	GetEntitlementByUserAndSource(ctx context.Context, arg GetEntitlementByUserAndSourceParams) (UserEntitlement, error)
 	GetEntitlementsByUser(ctx context.Context, userID string) ([]UserEntitlement, error)
@@ -34,7 +34,6 @@ type Querier interface {
 	MarkEventProcessed(ctx context.Context, arg MarkEventProcessedParams) error
 	MarkNotificationSent(ctx context.Context, id int64) error
 	ScheduleNotification(ctx context.Context, arg ScheduleNotificationParams) error
-	UpdateEntitlementCarrierPolledAt(ctx context.Context, arg UpdateEntitlementCarrierPolledAtParams) error
 	UpsertEntitlement(ctx context.Context, arg UpsertEntitlementParams) error
 }
 

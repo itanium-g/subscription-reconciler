@@ -10,6 +10,64 @@ import (
 	"database/sql"
 )
 
+const claimDueCarrierEntitlements = `-- name: ClaimDueCarrierEntitlements :many
+WITH due AS (
+  SELECT candidate.user_id
+  FROM user_entitlements AS candidate
+  WHERE candidate.source = 'CARRIER'
+    AND candidate.active = TRUE
+    AND (candidate.carrier_polled_at IS NULL OR candidate.carrier_polled_at <= $1)
+  ORDER BY candidate.carrier_polled_at ASC NULLS FIRST, candidate.user_id ASC
+  LIMIT $2
+  FOR UPDATE SKIP LOCKED
+)
+UPDATE user_entitlements AS entitlement
+SET carrier_polled_at = NOW()
+FROM due
+WHERE entitlement.user_id = due.user_id
+  AND entitlement.source = 'CARRIER'
+RETURNING entitlement.user_id, entitlement.source, entitlement.active,
+          entitlement.expires_at, entitlement.reason, entitlement.updated_at,
+          entitlement.last_event_time, entitlement.carrier_polled_at
+`
+
+type ClaimDueCarrierEntitlementsParams struct {
+	DueBefore  sql.NullTime
+	BatchLimit int32
+}
+
+func (q *Queries) ClaimDueCarrierEntitlements(ctx context.Context, arg ClaimDueCarrierEntitlementsParams) ([]UserEntitlement, error) {
+	rows, err := q.db.QueryContext(ctx, claimDueCarrierEntitlements, arg.DueBefore, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserEntitlement
+	for rows.Next() {
+		var i UserEntitlement
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Source,
+			&i.Active,
+			&i.ExpiresAt,
+			&i.Reason,
+			&i.UpdatedAt,
+			&i.LastEventTime,
+			&i.CarrierPolledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const expireEntitlement = `-- name: ExpireEntitlement :execrows
 UPDATE user_entitlements
 SET active = FALSE,
@@ -42,47 +100,6 @@ func (q *Queries) ExpireEntitlement(ctx context.Context, arg ExpireEntitlementPa
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-const getCarrierEntitlementsForPolling = `-- name: GetCarrierEntitlementsForPolling :many
-SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
-FROM user_entitlements
-WHERE source = 'CARRIER' AND active = TRUE
-ORDER BY carrier_polled_at ASC NULLS FIRST
-LIMIT $1
-FOR UPDATE SKIP LOCKED
-`
-
-func (q *Queries) GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]UserEntitlement, error) {
-	rows, err := q.db.QueryContext(ctx, getCarrierEntitlementsForPolling, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []UserEntitlement
-	for rows.Next() {
-		var i UserEntitlement
-		if err := rows.Scan(
-			&i.UserID,
-			&i.Source,
-			&i.Active,
-			&i.ExpiresAt,
-			&i.Reason,
-			&i.UpdatedAt,
-			&i.LastEventTime,
-			&i.CarrierPolledAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const getEntitlementByUserAndSource = `-- name: GetEntitlementByUserAndSource :one
@@ -289,22 +306,6 @@ func (q *Queries) ListExpiredEntitlementsForReconciliation(ctx context.Context, 
 		return nil, err
 	}
 	return items, nil
-}
-
-const updateEntitlementCarrierPolledAt = `-- name: UpdateEntitlementCarrierPolledAt :exec
-UPDATE user_entitlements
-SET carrier_polled_at = NOW()
-WHERE user_id = $1 AND source = $2
-`
-
-type UpdateEntitlementCarrierPolledAtParams struct {
-	UserID string
-	Source string
-}
-
-func (q *Queries) UpdateEntitlementCarrierPolledAt(ctx context.Context, arg UpdateEntitlementCarrierPolledAtParams) error {
-	_, err := q.db.ExecContext(ctx, updateEntitlementCarrierPolledAt, arg.UserID, arg.Source)
-	return err
 }
 
 const upsertEntitlement = `-- name: UpsertEntitlement :exec
