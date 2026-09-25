@@ -45,6 +45,7 @@ Manages the absolute source of truth for idempotency checks:
 Manages background job scheduling:
 - `ScheduleNotification`: Dedupes natively via `ON CONFLICT DO NOTHING`.
 - `GetDueNotifications`: Fetches jobs ready for broadcast.
+- `ClaimDueNotifications`: Atomically locks, marks, and returns a due batch for broadcast.
 
 ### `audit_logs.sql`
 Manages historical timeline generation (Stretch Feature):

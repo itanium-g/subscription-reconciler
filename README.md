@@ -85,8 +85,7 @@ graph TD
     TimelineHandler -->|Read Transitions| AuditLogsTable
 
     %% Notifications Flow
-    NotificationWorker -->|Fetch Due| NotificationsTable
-    NotificationWorker -->|Mark Sent| NotificationsTable
+    NotificationWorker -->|Atomically Claim & Mark Sent| NotificationsTable
 ```
 
 ### Design Principles
@@ -104,13 +103,15 @@ graph TD
 - **Idempotency**: All external events are deduplicated via atomic constraints. `InsertStoreEvent` and `InsertMarketplaceRevocation` use `ON CONFLICT DO NOTHING` as an atomic gate to prevent race conditions.
 - **Timestamp-based Ordering**: `STORE` events are strictly ordered by `event_time_ms` (from the webhook payload), entirely ignoring arrival time.
 - **Late-Arriving Events**: Safely persisted for auditing but prevented from overwriting newer active states without causing constraint violations.
-- **Worker Concurrency**: Carrier polling and Notification scheduling employ PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
+- **Worker Concurrency**: Carrier polling, notification claiming, and expiration reconciliation employ PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
 - **Expiration Reconciliation**: A periodic worker claims expired active entitlements with `FOR UPDATE SKIP LOCKED`, transitions them to `active = false`, and records an `EXPIRATION` audit row in the same transaction. The row's logical `expires_at` timestamp becomes `last_event_time`, preserving ordering for delayed renewals.
 - **Notification Deduplication**: Database constraints strictly guarantee at most one expiration notification per user per day.
 
 ### Background Workers
 
 The worker process runs carrier polling, notification delivery, and expiration reconciliation concurrently. Expiration reconciliation runs immediately at startup and then every minute, draining bounded batches of rows where `active = TRUE` and `expires_at <= NOW()` until the backlog is exhausted or shutdown is requested. Each batch keeps its row locks through the projection update and audit insert before committing.
+
+Notification delivery also runs immediately at startup and then every minute. Each drain iteration atomically selects due rows (`scheduled_for <= NOW()` and `sent_at IS NULL`) with `FOR UPDATE SKIP LOCKED`, sets `sent_at = NOW()` in the same transaction, commits, and only then returns the claimed batch. The worker continues claiming batches until it receives fewer than its batch size, so a backlog larger than one batch is drained without waiting for the next interval. Competing worker instances skip rows claimed by another transaction, providing at-most-once notification claiming; cancellation stops the drain before another batch is requested.
 
 Canonical entitlement reads apply `active AND (expires_at IS NULL OR expires_at > now)`. This keeps reads correct during the short interval before a background sweep persists `active = false`; an expired higher-priority source therefore falls back to a lower-priority active source.
 
@@ -323,7 +324,8 @@ curl http://localhost:8080/users/user_store_1/timeline
 | **Composite PK on `user_entitlements`** | Allows seamless tracking of multiple simultaneous sources. A user can easily be `active` via STORE and `inactive` via MARKETPLACE without destructive updates. |
 | **Deterministic Priority** | The API is forced to return a single source. `STORE > CARRIER > MARKETPLACE > NONE` provides a deterministic resolution to overlapping active entitlements. |
 | **Ordering via `event_time_ms`** | In-app store webhooks offer no ordering guarantees. By strictly applying state changes based on payload timestamps (rather than arrival), late-arriving events naturally do not corrupt newer data. |
-| **Worker Concurrency** | PostgreSQL's `FOR UPDATE SKIP LOCKED` allows multiple polling workers to safely pull independent user batches simultaneously without blocking or double-polling. |
+| **Worker Concurrency** | PostgreSQL's `FOR UPDATE SKIP LOCKED` allows multiple polling, notification, and expiration workers to safely claim independent batches simultaneously without blocking or double-processing rows. |
+| **Atomic Notification Claiming** | A transaction locks due notification rows, updates `sent_at`, and commits before returning the claimed batch. Notification workers drain full batches until the backlog is exhausted, while competing workers skip already-claimed rows. |
 | **Notification Deduplication** | Leveraging `ON CONFLICT DO NOTHING` alongside an `IMMUTABLE` functional index ensures that deduplication logic is atomic and race-condition free at the database level. |
 
 ---

@@ -2,14 +2,13 @@ package application
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 )
 
 // NotificationService handles notification operations.
 type NotificationService interface {
-	SendDueNotifications(ctx context.Context) (int32, error)
+	SendDueNotifications(ctx context.Context, batchSize int32) (int32, error)
 }
 
 // NewNotificationService creates a new notification service.
@@ -21,36 +20,14 @@ type notificationService struct {
 	db postgres.Database
 }
 
-// SendDueNotifications sends all notifications that are due.
-// In this implementation, "sending" means marking as sent in the database.
-// A real system would integrate with SMS/email provider here.
-func (s *notificationService) SendDueNotifications(ctx context.Context) (int32, error) {
-	// Fetch notifications that are due (scheduled_for <= now and sent_at is null)
-	notifications, err := s.db.GetDueNotifications(ctx, 1000) // Process up to 1000 per cycle
+// SendDueNotifications atomically claims a batch of due notifications.
+// Claiming marks notifications as sent before returning, which prevents
+// competing workers from dispatching the same notification twice.
+func (s *notificationService) SendDueNotifications(ctx context.Context, batchSize int32) (int32, error) {
+	notifications, err := s.db.ClaimDueNotifications(ctx, batchSize)
 	if err != nil {
 		return 0, err
 	}
 
-	if len(notifications) == 0 {
-		return 0, nil
-	}
-
-	// Mark each notification as sent
-	var sent int32
-	for _, notif := range notifications {
-		if err := s.db.MarkNotificationSent(ctx, notif.ID); err != nil {
-			// Log error but continue with other notifications
-			slog.Error("failed to mark notification sent", "id", notif.ID, "err", err)
-			continue
-		}
-		sent++
-
-		// In a real system, we would send the notification here:
-		// - Send SMS: "Your premium expires soon"
-		// - Send email: "Your subscription will expire on ..."
-		// - Send push notification, etc.
-		// For this assignment, we just mark it sent.
-	}
-
-	return sent, nil
+	return int32(len(notifications)), nil
 }

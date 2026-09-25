@@ -49,6 +49,53 @@ func (q *Queries) GetDueNotifications(ctx context.Context, limit int32) ([]Notif
 	return items, nil
 }
 
+const claimDueNotifications = `-- name: ClaimDueNotifications :many
+WITH due AS (
+	SELECT id
+	FROM notifications
+	WHERE scheduled_for <= NOW() AND sent_at IS NULL
+	ORDER BY scheduled_for ASC, id ASC
+	LIMIT $1
+	FOR UPDATE SKIP LOCKED
+)
+UPDATE notifications AS n
+SET sent_at = NOW()
+FROM due
+WHERE n.id = due.id
+	AND n.sent_at IS NULL
+RETURNING n.id, n.user_id, n.type, n.scheduled_for, n.sent_at, n.created_at
+`
+
+func (q *Queries) ClaimDueNotifications(ctx context.Context, limit int32) ([]Notification, error) {
+	rows, err := q.db.QueryContext(ctx, claimDueNotifications, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Notification
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Type,
+			&i.ScheduledFor,
+			&i.SentAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getNotificationByUserTypeAndDate = `-- name: GetNotificationByUserTypeAndDate :one
 SELECT id, user_id, type, scheduled_for, sent_at, created_at
 FROM notifications

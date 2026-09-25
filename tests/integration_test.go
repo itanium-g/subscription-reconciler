@@ -585,6 +585,172 @@ func TestNotificationDeduplication(t *testing.T) {
 	require.Equal(t, 1, count)
 }
 
+type notificationMetricsHandler struct {
+	mu      sync.Mutex
+	claimed int32
+}
+
+func (h *notificationMetricsHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *notificationMetricsHandler) Handle(_ context.Context, record slog.Record) error {
+	if record.Message != "notification sending cycle completed" {
+		return nil
+	}
+
+	var claimed int32
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "count" {
+			claimed = slogInt32(attr.Value)
+		}
+		return true
+	})
+
+	h.mu.Lock()
+	h.claimed += claimed
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *notificationMetricsHandler) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *notificationMetricsHandler) WithGroup(string) slog.Handler {
+	return h
+}
+
+func (h *notificationMetricsHandler) totalClaimed() int32 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.claimed
+}
+
+func slogInt32(value slog.Value) int32 {
+	switch value.Kind() {
+	case slog.KindInt64:
+		return int32(value.Int64())
+	case slog.KindUint64:
+		return int32(value.Uint64())
+	case slog.KindAny:
+		switch number := value.Any().(type) {
+		case int:
+			return int32(number)
+		case int32:
+			return number
+		case int64:
+			return int32(number)
+		}
+	}
+	return 0
+}
+
+func insertDueNotifications(t *testing.T, ctx context.Context, count int, userPrefix string) {
+	t.Helper()
+	dbConn, err := sql.Open("pgx", pgContainer.dsn)
+	require.NoError(t, err)
+	defer dbConn.Close()
+
+	_, err = dbConn.ExecContext(ctx, `
+		INSERT INTO notifications (user_id, type, scheduled_for)
+		SELECT $1 || i::text, $2, NOW() - INTERVAL '1 minute'
+		FROM generate_series(1, $3::int) AS series(i)
+	`, userPrefix, "PREMIUM_EXPIRES_SOON", count)
+	require.NoError(t, err)
+}
+
+func notificationCounts(ctx context.Context) (total int, sent int, err error) {
+	dbConn, err := sql.Open("pgx", pgContainer.dsn)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer dbConn.Close()
+
+	err = dbConn.QueryRowContext(ctx, `
+		SELECT COUNT(*)::int, COUNT(*) FILTER (WHERE sent_at IS NOT NULL)::int
+		FROM notifications
+	`).Scan(&total, &sent)
+	return total, sent, err
+}
+
+// TestConcurrentNotificationWorkers verifies concurrent workers claim each
+// due notification once and report exactly the shared backlog size.
+func TestConcurrentNotificationWorkers(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	const notificationCount = 64
+	const workerCount = 4
+	insertDueNotifications(t, ctx, notificationCount, "user_notification_concurrent_")
+
+	metrics := &notificationMetricsHandler{}
+	logger := slog.New(metrics)
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{}, workerCount)
+	start := make(chan struct{})
+	workers := make([]*workerinfra.NotificationWorker, 0, workerCount)
+	for range workerCount {
+		workers = append(workers, workerinfra.NewNotificationWorker(testDB, logger))
+	}
+	defer func() {
+		cancel()
+		for range workerCount {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("notification worker did not stop after context cancellation")
+			}
+		}
+	}()
+
+	for _, notificationWorker := range workers {
+		go func(w *workerinfra.NotificationWorker) {
+			<-start
+			w.StartNotificationSending(workerCtx)
+			done <- struct{}{}
+		}(notificationWorker)
+	}
+	close(start)
+
+	require.Eventually(t, func() bool {
+		total, sent, err := notificationCounts(ctx)
+		return err == nil && total == notificationCount && sent == notificationCount && metrics.totalClaimed() == notificationCount
+	}, 10*time.Second, 20*time.Millisecond)
+}
+
+// TestNotificationWorkerBacklogDraining verifies a worker drains more than a
+// single batch before waiting for its next scheduled interval.
+func TestNotificationWorkerBacklogDraining(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	const notificationCount = 2001
+	insertDueNotifications(t, ctx, notificationCount, "user_notification_backlog_")
+
+	metrics := &notificationMetricsHandler{}
+	logger := slog.New(metrics)
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	worker := workerinfra.NewNotificationWorker(testDB, logger)
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("notification worker did not stop after context cancellation")
+		}
+	}()
+
+	go func() {
+		worker.StartNotificationSending(workerCtx)
+		close(done)
+	}()
+
+	require.Eventually(t, func() bool {
+		total, sent, err := notificationCounts(ctx)
+		return err == nil && total == notificationCount && sent == notificationCount && metrics.totalClaimed() == notificationCount
+	}, 15*time.Second, 20*time.Millisecond)
+}
+
 // TestConcurrentCarrierWorkers tests multiple workers don't double-poll users.
 func TestConcurrentCarrierWorkers(t *testing.T) {
 	cleanDB(t)
