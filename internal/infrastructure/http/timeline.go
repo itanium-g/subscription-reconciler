@@ -74,4 +74,3 @@ func (h *TimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Reque
 
 	h.logger.InfoContext(ctx, "timeline queried", "user_id", userID, "entries", len(timeline.Entries), "total", timeline.Total)
 }
-

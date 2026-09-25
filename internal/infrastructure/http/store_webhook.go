@@ -72,4 +72,3 @@ func (h *StoreWebhookHandler) HandleStoreWebhook(w http.ResponseWriter, r *http.
 		"duplicate", result.IsDuplicate,
 	)
 }
-

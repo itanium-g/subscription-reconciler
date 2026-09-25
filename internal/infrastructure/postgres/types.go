@@ -75,7 +75,13 @@ type EntitlementRepository interface {
 	UpdateEntitlementCarrierPolledAt(ctx context.Context, userID string, source string) error
 	GetLastEventTimeFromStore(ctx context.Context, userID string) (int64, error)
 	GetEntitlementsExpiringWithin24h(ctx context.Context) ([]Entitlement, error)
+	GetExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]Entitlement, error)
 	GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]Entitlement, error)
+}
+
+// ExpirationReconciler performs an atomic, locked expiration sweep.
+type ExpirationReconciler interface {
+	ReconcileExpiredEntitlements(ctx context.Context, limit int32) (int32, error)
 }
 
 // StoreEventRepository handles store event persistence.

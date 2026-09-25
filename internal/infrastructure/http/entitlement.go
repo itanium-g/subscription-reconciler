@@ -48,4 +48,3 @@ func (h *EntitlementHandler) HandleGetEntitlement(w http.ResponseWriter, r *http
 
 	h.logger.InfoContext(ctx, "entitlement queried", "user_id", userID, "source", entitlement.Source, "active", entitlement.Active)
 }
-

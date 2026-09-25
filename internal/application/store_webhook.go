@@ -103,6 +103,13 @@ func (s *storeWebhookService) computeStateTransition(eventType string, eventTime
 		expiry := eventTime.AddDate(0, 1, 0)
 		expiresAt = &expiry
 		reason = eventType
+		if !expiry.After(time.Now()) {
+			// A late-arriving grant has already elapsed by the time it is
+			// received. Preserve its historical expiry, but do not grant
+			// access retroactively.
+			active = false
+			reason = string(domain.EventTypeExpiration)
+		}
 
 	case "CANCELLATION":
 		// User loses premium access immediately.

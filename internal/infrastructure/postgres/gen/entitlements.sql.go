@@ -10,6 +10,40 @@ import (
 	"database/sql"
 )
 
+const expireEntitlement = `-- name: ExpireEntitlement :execrows
+UPDATE user_entitlements
+SET active = FALSE,
+    expires_at = NULL,
+    reason = $3,
+    updated_at = NOW(),
+    last_event_time = $4
+WHERE user_id = $1
+  AND source = $2
+  AND active = TRUE
+  AND expires_at IS NOT NULL
+  AND expires_at <= NOW()
+`
+
+type ExpireEntitlementParams struct {
+	UserID        string
+	Source        string
+	Reason        sql.NullString
+	LastEventTime int64
+}
+
+func (q *Queries) ExpireEntitlement(ctx context.Context, arg ExpireEntitlementParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, expireEntitlement,
+		arg.UserID,
+		arg.Source,
+		arg.Reason,
+		arg.LastEventTime,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getCarrierEntitlementsForPolling = `-- name: GetCarrierEntitlementsForPolling :many
 SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
 FROM user_entitlements
@@ -159,6 +193,49 @@ func (q *Queries) GetEntitlementsExpiringWithin24h(ctx context.Context) ([]UserE
 	return items, nil
 }
 
+const getExpiredEntitlementsForReconciliation = `-- name: GetExpiredEntitlementsForReconciliation :many
+SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
+FROM user_entitlements
+WHERE active = TRUE
+  AND expires_at IS NOT NULL
+  AND expires_at <= NOW()
+ORDER BY expires_at ASC
+LIMIT $1
+FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) GetExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]UserEntitlement, error) {
+	rows, err := q.db.QueryContext(ctx, getExpiredEntitlementsForReconciliation, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserEntitlement
+	for rows.Next() {
+		var i UserEntitlement
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Source,
+			&i.Active,
+			&i.ExpiresAt,
+			&i.Reason,
+			&i.UpdatedAt,
+			&i.LastEventTime,
+			&i.CarrierPolledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getLastEventTimeFromStore = `-- name: GetLastEventTimeFromStore :one
 SELECT COALESCE(MAX(last_event_time), 0)
 FROM user_entitlements
@@ -170,6 +247,48 @@ func (q *Queries) GetLastEventTimeFromStore(ctx context.Context, userID string) 
 	var coalesce interface{}
 	err := row.Scan(&coalesce)
 	return coalesce, err
+}
+
+const listExpiredEntitlementsForReconciliation = `-- name: ListExpiredEntitlementsForReconciliation :many
+SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
+FROM user_entitlements
+WHERE active = TRUE
+  AND expires_at IS NOT NULL
+  AND expires_at <= NOW()
+ORDER BY expires_at ASC
+LIMIT $1
+`
+
+func (q *Queries) ListExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]UserEntitlement, error) {
+	rows, err := q.db.QueryContext(ctx, listExpiredEntitlementsForReconciliation, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []UserEntitlement
+	for rows.Next() {
+		var i UserEntitlement
+		if err := rows.Scan(
+			&i.UserID,
+			&i.Source,
+			&i.Active,
+			&i.ExpiresAt,
+			&i.Reason,
+			&i.UpdatedAt,
+			&i.LastEventTime,
+			&i.CarrierPolledAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateEntitlementCarrierPolledAt = `-- name: UpdateEntitlementCarrierPolledAt :exec

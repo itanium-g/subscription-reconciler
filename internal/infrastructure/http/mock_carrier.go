@@ -77,4 +77,3 @@ func hashUserID(userID string) uint64 {
 	}
 	return h
 }
-

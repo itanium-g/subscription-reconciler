@@ -39,6 +39,38 @@ WHERE active = TRUE
   AND expires_at > NOW()
 ORDER BY expires_at ASC;
 
+-- name: GetExpiredEntitlementsForReconciliation :many
+SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
+FROM user_entitlements
+WHERE active = TRUE
+  AND expires_at IS NOT NULL
+  AND expires_at <= NOW()
+ORDER BY expires_at ASC
+LIMIT $1
+FOR UPDATE SKIP LOCKED;
+
+-- name: ListExpiredEntitlementsForReconciliation :many
+SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
+FROM user_entitlements
+WHERE active = TRUE
+  AND expires_at IS NOT NULL
+  AND expires_at <= NOW()
+ORDER BY expires_at ASC
+LIMIT $1;
+
+-- name: ExpireEntitlement :execrows
+UPDATE user_entitlements
+SET active = FALSE,
+    expires_at = NULL,
+    reason = $3,
+    updated_at = NOW(),
+    last_event_time = $4
+WHERE user_id = $1
+  AND source = $2
+  AND active = TRUE
+  AND expires_at IS NOT NULL
+  AND expires_at <= NOW();
+
 -- name: GetCarrierEntitlementsForPolling :many
 SELECT user_id, source, active, expires_at, reason, updated_at, last_event_time, carrier_polled_at
 FROM user_entitlements

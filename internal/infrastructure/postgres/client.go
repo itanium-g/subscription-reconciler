@@ -16,6 +16,8 @@ type Client struct {
 	queries *gen.Queries
 }
 
+var _ ExpirationReconciler = (*Client)(nil)
+
 // Connect opens a database/sql connection using the pgx stdlib driver and
 // returns a Client ready to use. Callers must defer Client.Close().
 func Connect(ctx context.Context, dsn string) (*Client, error) {
@@ -79,7 +81,7 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	q := c.queries.WithTx(tx)
 
@@ -176,12 +178,93 @@ func (c *Client) GetEntitlementsExpiringWithin24h(ctx context.Context) ([]Entitl
 	return out, nil
 }
 
+// GetExpiredEntitlementsForReconciliation lists expired candidates for
+// repository implementations that do not provide the atomic reconciler. The
+// concrete PostgreSQL client uses ReconcileExpiredEntitlements below so row
+// locks are held through the projection and audit writes.
+func (c *Client) GetExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]Entitlement, error) {
+	rows, err := c.queries.ListExpiredEntitlementsForReconciliation(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Entitlement, len(rows))
+	for i, r := range rows {
+		out[i] = *entitlementFromGen(r)
+	}
+	return out, nil
+}
+
+// ReconcileExpiredEntitlements atomically claims and expires one batch of
+// entitlements. Selected rows remain locked until both the projection update
+// and its EXPIRATION audit row are committed.
+func (c *Client) ReconcileExpiredEntitlements(ctx context.Context, limit int32) (int32, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	q := c.queries.WithTx(tx)
+	rows, err := q.GetExpiredEntitlementsForReconciliation(ctx, limit)
+	if err != nil {
+		return 0, err
+	}
+
+	reason := "EXPIRATION"
+	var reconciled int32
+	for _, row := range rows {
+		if !row.ExpiresAt.Valid {
+			continue
+		}
+
+		expirationTime := row.ExpiresAt.Time
+		affected, err := q.ExpireEntitlement(ctx, gen.ExpireEntitlementParams{
+			UserID:        row.UserID,
+			Source:        row.Source,
+			Reason:        nullString(&reason),
+			LastEventTime: expirationTime.UnixMilli(),
+		})
+		if err != nil {
+			return 0, err
+		}
+		if affected == 0 {
+			continue
+		}
+
+		previousActive := true
+		if err := q.InsertAuditLog(ctx, gen.InsertAuditLogParams{
+			UserID:            row.UserID,
+			Source:            row.Source,
+			PreviousActive:    nullBool(&previousActive),
+			NextActive:        false,
+			PreviousExpiresAt: row.ExpiresAt,
+			NextExpiresAt:     sql.NullTime{},
+			TriggeringEventID: sql.NullString{},
+			Reason:            nullString(&reason),
+		}); err != nil {
+			return 0, err
+		}
+
+		reconciled++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return reconciled, nil
+}
+
 func (c *Client) GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]Entitlement, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	q := c.queries.WithTx(tx)
 
@@ -335,7 +418,7 @@ func (c *Client) GetDueNotifications(ctx context.Context, limit int32) ([]Notifi
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	q := c.queries.WithTx(tx)
 
