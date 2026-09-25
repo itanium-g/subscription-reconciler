@@ -99,6 +99,36 @@ The schema is built on a **hybrid event-sourcing model**:
 > ```
 > If a notification of identical `type` for the same `user_id` on the same `date` exists, the insert is gracefully swallowed.
 
+### Atomic due-notification claiming
+
+`ClaimDueNotifications` drains a bounded notification batch with one database
+transaction:
+
+```sql
+WITH due AS (
+    SELECT id
+    FROM notifications
+    WHERE scheduled_for <= NOW() AND sent_at IS NULL
+    ORDER BY scheduled_for ASC, id ASC
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE notifications AS n
+SET sent_at = NOW()
+FROM due
+WHERE n.id = due.id
+  AND n.sent_at IS NULL
+RETURNING n.id, n.user_id, n.type, n.scheduled_for, n.sent_at, n.created_at;
+```
+
+The PostgreSQL client keeps the row locks until this update commits. Therefore,
+concurrent notification workers skip rows claimed by another transaction and
+cannot return the same notification for dispatch. A worker repeats the claim
+until a batch is smaller than its configured limit or its context is canceled.
+The partial `idx_notifications_scheduled_for` index covers the `sent_at IS NULL`
+predicate and scheduled-time ordering, and claimed rows leave that index after
+`sent_at` is set.
+
 ---
 
 ### `audit_logs` (Stretch Feature)
@@ -149,6 +179,9 @@ Migrations are executed via `migrate/migrate` automatically during initializatio
 ### Expiration Reconciliation Concurrency
 - **Zero-Collision Expiration Sweeps**: The expiration claim locks only expired active rows with `FOR UPDATE SKIP LOCKED`. The worker updates and audits the locked batch before committing, so concurrent workers cannot create duplicate expiration transitions.
 
+### Notification Claiming Concurrency
+- **Zero-Collision Notification Claims**: The claim query locks due rows with `FOR UPDATE SKIP LOCKED`, updates `sent_at` in the same transaction, and commits before returning. Multiple workers therefore receive disjoint batches, and each worker drains full batches until no backlog remains or shutdown is requested.
+
 ---
 
 ## Performance Characteristics
@@ -159,5 +192,5 @@ Migrations are executed via `migrate/migrate` automatically during initializatio
 | Locate expiring users | `idx_user_entitlements_expires_at` | `O(log n)` |
 | Locate expired entitlements for reconciliation | `idx_user_entitlements_expires_at` | `O(log n)` |
 | Identify carrier poll targets | `idx_user_entitlements_carrier_polled` | `O(log n)` |
-| Retrieve due notifications | `idx_notifications_scheduled_for` | `O(log n)` |
+| Retrieve and claim due notifications | `idx_notifications_scheduled_for` | `O(log n)` |
 | Construct user audit trail | `idx_audit_logs_user_id` | `O(log n)` |

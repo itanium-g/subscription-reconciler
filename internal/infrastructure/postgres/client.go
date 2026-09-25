@@ -413,6 +413,36 @@ func (c *Client) ScheduleNotification(ctx context.Context, userID string, notifi
 	})
 }
 
+// ClaimDueNotifications atomically claims and marks a batch of due
+// notifications as sent. The row locks are held until the update commits, so
+// competing workers cannot claim the same notification.
+func (c *Client) ClaimDueNotifications(ctx context.Context, limit int32) ([]Notification, error) {
+	if limit <= 0 {
+		return []Notification{}, nil
+	}
+
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := c.queries.WithTx(tx).ClaimDueNotifications(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	claimed := make([]Notification, len(rows))
+	for i, row := range rows {
+		claimed[i] = notificationFromGen(row)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return claimed, nil
+}
+
 func (c *Client) GetDueNotifications(ctx context.Context, limit int32) ([]Notification, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {

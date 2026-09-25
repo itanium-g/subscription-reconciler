@@ -108,6 +108,7 @@ type ProcessedEventRepository interface {
 type NotificationRepository interface {
 	ScheduleNotification(ctx context.Context, userID string, notificationType string, scheduledFor time.Time) error
 	GetDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
+	ClaimDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	MarkNotificationSent(ctx context.Context, id int64) error
 	GetNotificationByUserTypeAndDate(ctx context.Context, userID string, notificationType string, date time.Time) (*Notification, error)
 }

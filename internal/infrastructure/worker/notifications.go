@@ -9,6 +9,11 @@ import (
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 )
 
+const (
+	notificationSendingInterval       = time.Minute
+	notificationBatchSize       int32 = 1000
+)
+
 // NotificationWorker runs background notification jobs.
 type NotificationWorker struct {
 	service application.NotificationService
@@ -26,10 +31,10 @@ func NewNotificationWorker(db postgres.Database, logger *slog.Logger) *Notificat
 
 // StartNotificationSending starts the notification sender job (every 1 minute).
 func (w *NotificationWorker) StartNotificationSending(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(notificationSendingInterval)
 	defer ticker.Stop()
 
-	w.logger.InfoContext(ctx, "notification sender worker started", "interval", "1 minute")
+	w.logger.InfoContext(ctx, "notification sender worker started", "interval", notificationSendingInterval.String(), "batch_size", notificationBatchSize)
 
 	// Run immediately on startup
 	w.sendOnce(ctx)
@@ -46,18 +51,29 @@ func (w *NotificationWorker) StartNotificationSending(ctx context.Context) {
 	}
 }
 
-// sendOnce runs a single notification sending cycle.
+// sendOnce drains the due notification backlog in bounded batches.
 func (w *NotificationWorker) sendOnce(ctx context.Context) {
 	startTime := time.Now()
+	var claimed int32
 
-	// Send due notifications
-	sent, err := w.service.SendDueNotifications(ctx)
-	if err != nil {
-		w.logger.ErrorContext(ctx, "notification sending error", "err", err, "duration", time.Since(startTime))
-		return
+	for {
+		if err := ctx.Err(); err != nil {
+			return
+		}
+
+		batchClaimed, err := w.service.SendDueNotifications(ctx, notificationBatchSize)
+		if err != nil {
+			if ctx.Err() == nil {
+				w.logger.ErrorContext(ctx, "notification sending error", "err", err, "count", claimed, "duration", time.Since(startTime))
+			}
+			return
+		}
+
+		claimed += batchClaimed
+		if batchClaimed < notificationBatchSize {
+			break
+		}
 	}
 
-	if sent > 0 {
-		w.logger.InfoContext(ctx, "notifications sent", "count", sent, "duration", time.Since(startTime))
-	}
+	w.logger.InfoContext(ctx, "notification sending cycle completed", "count", claimed, "duration", time.Since(startTime))
 }

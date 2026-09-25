@@ -14,6 +14,7 @@ type Querier interface {
 	ExpireEntitlement(ctx context.Context, arg ExpireEntitlementParams) (int64, error)
 	GetAuditLogsByUser(ctx context.Context, arg GetAuditLogsByUserParams) ([]AuditLog, error)
 	GetCarrierEntitlementsForPolling(ctx context.Context, limit int32) ([]UserEntitlement, error)
+	ClaimDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	GetDueNotifications(ctx context.Context, limit int32) ([]Notification, error)
 	GetEntitlementByUserAndSource(ctx context.Context, arg GetEntitlementByUserAndSourceParams) (UserEntitlement, error)
 	GetEntitlementsByUser(ctx context.Context, userID string) ([]UserEntitlement, error)
