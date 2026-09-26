@@ -65,11 +65,20 @@ The worker uses a five-minute `due_before` cutoff and drains batches until one i
 
 > [!TIP]
 > **Processing Workflow**:
-> 1. Webhook arrives.
-> 2. Idempotency Check (via `processed_events`).
-> 3. Insert into `store_events` (Unique constraint enforces uniqueness).
-> 4. If `payload.event_time_ms >= current.last_event_time`, update `user_entitlements`.
-> 5. Mark as processed.
+> 1. Begin one transaction for the webhook.
+> 2. Insert into `store_events`; its unique `event_id` constraint is the duplicate-delivery gate.
+> 3. Acquire the per-user transaction advisory lock, then apply the event only if its timestamp is newer than the projection.
+> 4. Insert an audit row only if the upsert affected a row and active status or expiration actually changed.
+> 5. Schedule an expiration notification only for a successful transition to an active grant with an expiry.
+> 6. Mark the event processed and commit all writes together. Any error rolls the transaction back, including the event insert, so a retry can run normally.
+
+### Store webhook transaction and concurrency
+
+The PostgreSQL client wraps store event recording, entitlement reconciliation, optional notification scheduling, audit insertion, and processed marking in one transaction. A failure in any step rolls back the entire ingestion attempt, preventing an unprocessed event row from suppressing a provider retry.
+
+Before reading or mutating an entitlement, `UpsertEntitlement` calls `pg_advisory_xact_lock(hashtextextended(user_id, 0))`. The lock is held until the surrounding transaction commits or rolls back. It serializes updates for the same user while allowing independent users to proceed concurrently. The timestamp predicate remains on the upsert as a second ordering guard.
+
+`UpsertEntitlement` uses sqlc's `:execrows` result. A zero row count means the timestamp predicate rejected the update, so no audit row is written. A successful projection update creates an audit row only when `active` or `expires_at` changes; metadata-only updates such as a newer event timestamp do not create phantom state transitions. Expiration notifications use the same transition result and are written in the same transaction.
 
 ---
 
@@ -82,11 +91,11 @@ The worker uses a five-minute `due_before` cutoff and drains batches until one i
 ---
 
 ### `processed_events`
-**Purpose**: The central idempotency authority for external events.
+**Purpose**: Records successfully processed external event identifiers by source.
 
 **Key Design**:
 - **Composite PK**: `(event_id, source)` — Ensures that identical `event_id`s from differing sources do not collide.
-- Evaluated prior to processing any webhook to guarantee strict at-most-once operational semantics.
+- Store webhook completion markers are written after reconciliation and commit in the same transaction as the event row, entitlement, audit, and optional notification writes. The `store_events.event_id` unique constraint is the duplicate-delivery gate; a failed transaction leaves no marker or event row behind.
 
 ---
 
@@ -142,7 +151,8 @@ predicate and scheduled-time ordering, and claimed rows leave that index after
 
 **Key Design**:
 - Captures `previous_active` / `next_active` and `previous_expires_at` / `next_expires_at`.
-- Interwoven seamlessly into the same PostgreSQL transaction as `user_entitlements` updates.
+- Written only for an affected entitlement upsert that changes active status or expiration; a stale event or metadata-only update adds no transition row.
+- Interwoven into the same PostgreSQL transaction as `user_entitlements`, store event, notification, and processed-event writes.
 
 ### Expiration reconciliation query
 

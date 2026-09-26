@@ -9,7 +9,10 @@ FROM user_entitlements
 WHERE user_id = $1
 ORDER BY source;
 
--- name: UpsertEntitlement :exec
+-- name: LockEntitlementUser :exec
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(user_id)::text, 0));
+
+-- name: UpsertEntitlement :execrows
 INSERT INTO user_entitlements (user_id, source, active, expires_at, reason, updated_at, last_event_time)
 VALUES ($1, $2, $3, $4, $5, NOW(), $6)
 ON CONFLICT (user_id, source) DO UPDATE SET

@@ -31,10 +31,11 @@ type Querier interface {
 	InsertStoreEvent(ctx context.Context, arg InsertStoreEventParams) (sql.Result, error)
 	IsEventProcessed(ctx context.Context, arg IsEventProcessedParams) (bool, error)
 	ListExpiredEntitlementsForReconciliation(ctx context.Context, limit int32) ([]UserEntitlement, error)
+	LockEntitlementUser(ctx context.Context, userID string) error
 	MarkEventProcessed(ctx context.Context, arg MarkEventProcessedParams) error
 	MarkNotificationSent(ctx context.Context, id int64) error
 	ScheduleNotification(ctx context.Context, arg ScheduleNotificationParams) error
-	UpsertEntitlement(ctx context.Context, arg UpsertEntitlementParams) error
+	UpsertEntitlement(ctx context.Context, arg UpsertEntitlementParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)
