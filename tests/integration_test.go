@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -262,6 +263,168 @@ func TestLateArrivingStoreEvents(t *testing.T) {
 	ent, err = queryService.GetCanonicalEntitlement(ctx, userID)
 	require.NoError(t, err)
 	require.False(t, ent.Active)
+}
+
+func TestConcurrentStoreWebhooksForSameUser(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	service := application.NewStoreWebhookService(testDB)
+	const userID = "user_concurrent_store_webhooks"
+	now := time.Now().UnixMilli()
+	events := make([]*domain.StoreWebhookPayload, 8)
+	for i := range events {
+		eventType := "RENEWAL"
+		if i%2 == 0 {
+			eventType = "CANCELLATION"
+		}
+		events[i] = &domain.StoreWebhookPayload{
+			EventID:     fmt.Sprintf("event_concurrent_%02d", i),
+			UserID:      userID,
+			Type:        eventType,
+			EventTimeMs: now - int64(len(events)-i)*60_000,
+			ProductID:   "premium_1_month",
+		}
+	}
+	newest := events[len(events)-1]
+	start := make(chan struct{})
+	type result struct {
+		response *domain.StoreWebhookResponse
+		err      error
+	}
+	results := make(chan result, len(events))
+	for _, event := range events {
+		go func(payload *domain.StoreWebhookPayload) {
+			<-start
+			response, err := service.ProcessStoreWebhook(ctx, payload)
+			results <- result{response: response, err: err}
+		}(event)
+	}
+	close(start)
+	for range events {
+		outcome := <-results
+		require.NoError(t, outcome.err)
+		require.NotNil(t, outcome.response)
+		require.True(t, outcome.response.Accepted)
+		require.False(t, outcome.response.IsDuplicate)
+	}
+
+	entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+	require.NoError(t, err)
+	require.NotNil(t, entitlement)
+	require.True(t, entitlement.Active)
+	require.Equal(t, newest.EventTimeMs, entitlement.LastEventTime)
+	expectedExpiry := time.UnixMilli(newest.EventTimeMs).AddDate(0, 1, 0)
+	require.True(t, entitlement.ExpiresAt.Equal(expectedExpiry))
+
+	storeEvents, err := testDB.GetStoreEventsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Len(t, storeEvents, len(events))
+
+	auditLogs, err := testDB.GetAuditLogsByUser(ctx, userID, int32(len(events)+1), 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, auditLogs)
+	require.LessOrEqual(t, len(auditLogs), len(events))
+	sort.Slice(auditLogs, func(i, j int) bool { return auditLogs[i].ID < auditLogs[j].ID })
+	eventTimes := make(map[string]int64, len(events))
+	for _, event := range events {
+		eventTimes[event.EventID] = event.EventTimeMs
+	}
+	var previousEventTime int64
+	for i, audit := range auditLogs {
+		require.NotNil(t, audit.TriggeringEventID)
+		eventTime, exists := eventTimes[*audit.TriggeringEventID]
+		require.True(t, exists, "unexpected audit event %q", *audit.TriggeringEventID)
+		if i > 0 {
+			require.Greater(t, eventTime, previousEventTime, "audit transitions must follow increasing event time")
+		}
+		previousEventTime = eventTime
+	}
+	require.Equal(t, newest.EventID, *auditLogs[len(auditLogs)-1].TriggeringEventID)
+}
+
+func TestStoreWebhookAtomicityAndRetry(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	const eventID = "event_atomic_retry"
+	const userID = "user_atomic_retry"
+	dbConn, err := sql.Open("pgx", pgContainer.dsn)
+	require.NoError(t, err)
+	defer dbConn.Close()
+	defer func() {
+		_, _ = dbConn.Exec("DROP TRIGGER IF EXISTS fail_store_webhook_processed_test ON processed_events")
+		_, _ = dbConn.Exec("DROP FUNCTION IF EXISTS fail_store_webhook_processed_test()")
+	}()
+
+	_, err = dbConn.Exec(`
+		CREATE OR REPLACE FUNCTION fail_store_webhook_processed_test() RETURNS trigger AS $$
+		BEGIN
+			IF NEW.event_id = 'event_atomic_retry' THEN
+				RAISE EXCEPTION 'injected processed-event failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql
+	`)
+	require.NoError(t, err)
+	_, err = dbConn.Exec(`
+		CREATE TRIGGER fail_store_webhook_processed_test
+		BEFORE INSERT ON processed_events
+		FOR EACH ROW EXECUTE FUNCTION fail_store_webhook_processed_test()
+	`)
+	require.NoError(t, err)
+
+	payload := &domain.StoreWebhookPayload{
+		EventID:     eventID,
+		UserID:      userID,
+		Type:        "INITIAL_PURCHASE",
+		EventTimeMs: time.Now().Add(-time.Hour).UnixMilli(),
+		ProductID:   "premium_1_month",
+	}
+	service := application.NewStoreWebhookService(testDB)
+	response, err := service.ProcessStoreWebhook(ctx, payload)
+	require.Error(t, err)
+	require.Nil(t, response)
+
+	storeEvents, err := testDB.GetStoreEventsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Empty(t, storeEvents)
+	_, err = testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+	require.ErrorIs(t, err, sql.ErrNoRows)
+	processed, err := testDB.IsEventProcessed(ctx, eventID, "STORE")
+	require.NoError(t, err)
+	require.False(t, processed)
+	auditCount, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Zero(t, auditCount)
+	var notificationCount int
+	err = dbConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE user_id = $1`, userID).Scan(&notificationCount)
+	require.NoError(t, err)
+	require.Zero(t, notificationCount)
+
+	_, err = dbConn.Exec("DROP TRIGGER fail_store_webhook_processed_test ON processed_events")
+	require.NoError(t, err)
+	_, err = dbConn.Exec("DROP FUNCTION fail_store_webhook_processed_test()")
+	require.NoError(t, err)
+
+	response, err = service.ProcessStoreWebhook(ctx, payload)
+	require.NoError(t, err)
+	require.True(t, response.Accepted)
+	require.False(t, response.IsDuplicate)
+	storeEvents, err = testDB.GetStoreEventsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Len(t, storeEvents, 1)
+	entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+	require.NoError(t, err)
+	require.True(t, entitlement.Active)
+	processed, err = testDB.IsEventProcessed(ctx, eventID, "STORE")
+	require.NoError(t, err)
+	require.True(t, processed)
+	auditCount, err = testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, auditCount)
+	err = dbConn.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE user_id = $1`, userID).Scan(&notificationCount)
+	require.NoError(t, err)
+	require.Equal(t, 1, notificationCount)
 }
 
 // TestEntitlementExpirationFallback verifies that an expired high-priority

@@ -96,6 +96,20 @@ type StoreEventRepository interface {
 	GetStoreEventByID(ctx context.Context, eventID string) (*StoreEvent, error)
 }
 
+// StoreWebhookTransaction exposes only the writes that belong to one store
+// webhook ingestion transaction.
+type StoreWebhookTransaction interface {
+	InsertStoreEvent(ctx context.Context, eventID string, userID string, eventType string, eventTimeMs int64, productID *string) (bool, error)
+	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error)
+	ScheduleNotification(ctx context.Context, userID string, notificationType string, scheduledFor time.Time) error
+	MarkEventProcessed(ctx context.Context, eventID string, source string) error
+}
+
+// StoreWebhookRepository runs store webhook writes in one database transaction.
+type StoreWebhookRepository interface {
+	WithStoreWebhookTransaction(ctx context.Context, fn func(StoreWebhookTransaction) error) error
+}
+
 // MarketplaceRevocationRepository handles marketplace revocation persistence.
 type MarketplaceRevocationRepository interface {
 	InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) (bool, error)
@@ -130,6 +144,7 @@ type Database interface {
 	EntitlementRepository
 	CarrierPollingRepository
 	StoreEventRepository
+	StoreWebhookRepository
 	MarketplaceRevocationRepository
 	ProcessedEventRepository
 	NotificationRepository

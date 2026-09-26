@@ -88,6 +88,10 @@ graph TD
     NotificationWorker -->|Atomically Claim & Mark Sent| NotificationsTable
 ```
 
+### Ingress Channels
+
+Store webhooks are recorded, reconciled into `user_entitlements`, audited, optionally scheduled for expiration notification, and marked processed inside one PostgreSQL transaction. A failed write rolls back the event record as well, so an at-least-once provider retry can process it again. Entitlement mutations take a transaction advisory lock derived from the user ID, which serializes concurrent webhook state changes for that user.
+
 ### Design Principles
 
 - **Hybrid Event Model**: Immutable event history combined with a mutable canonical projection.
@@ -101,8 +105,10 @@ graph TD
 ### Key Features
 
 - **Idempotency**: All external events are deduplicated via atomic constraints. `InsertStoreEvent` and `InsertMarketplaceRevocation` use `ON CONFLICT DO NOTHING` as an atomic gate to prevent race conditions.
+- **Atomic Store Webhook Ingestion**: Store event recording, entitlement and audit writes, expiration notification scheduling, and processed marking share one transaction. Failures roll back the event record so retries are not mistaken for duplicates.
 - **Timestamp-based Ordering**: `STORE` events are strictly ordered by `event_time_ms` (from the webhook payload), entirely ignoring arrival time.
 - **Late-Arriving Events**: Safely persisted for auditing but prevented from overwriting newer active states without causing constraint violations.
+- **Store State and Audit Consistency**: PostgreSQL advisory locks serialize entitlement mutations per user. An upsert must affect a row before its state can be audited, and audit rows are written only when active status or expiration changes.
 - **Worker Concurrency**: Carrier polling, notification claiming, and expiration reconciliation employ PostgreSQL's `FOR UPDATE SKIP LOCKED` for thread-safe, lock-free concurrent worker execution.
 - **Expiration Reconciliation**: A periodic worker claims expired active entitlements with `FOR UPDATE SKIP LOCKED`, transitions them to `active = false`, and records an `EXPIRATION` audit row in the same transaction. The row's logical `expires_at` timestamp becomes `last_event_time`, preserving ordering for delayed renewals.
 - **Notification Deduplication**: Database constraints strictly guarantee at most one expiration notification per user per day.
@@ -326,6 +332,8 @@ curl http://localhost:8080/users/user_store_1/timeline
 | **Composite PK on `user_entitlements`** | Allows seamless tracking of multiple simultaneous sources. A user can easily be `active` via STORE and `inactive` via MARKETPLACE without destructive updates. |
 | **Deterministic Priority** | The API is forced to return a single source. `STORE > CARRIER > MARKETPLACE > NONE` provides a deterministic resolution to overlapping active entitlements. |
 | **Ordering via `event_time_ms`** | In-app store webhooks offer no ordering guarantees. By strictly applying state changes based on payload timestamps (rather than arrival), late-arriving events naturally do not corrupt newer data. |
+| **Atomic Store Webhook Processing** | Event ingestion, projection and audit updates, notification scheduling, and processed marking commit together, allowing transient failures to roll back cleanly and succeed on retry. |
+| **Per-User Entitlement Locking** | A PostgreSQL transaction advisory lock serializes same-user mutations. The upsert row count and state comparison gate audit writes, preserving a monotonic history without no-op transitions. |
 | **Worker Concurrency** | PostgreSQL's `FOR UPDATE SKIP LOCKED` allows multiple polling, notification, and expiration workers to safely claim independent batches simultaneously without blocking or double-processing rows. |
 | **Atomic Carrier Poll Claims** | A single CTE selects due active carrier entitlements with `FOR UPDATE SKIP LOCKED` and advances `carrier_polled_at` for the whole batch before returning it. The five-minute staleness cutoff avoids re-polling recently claimed users, and workers drain full batches until no backlog remains. |
 | **Carrier Audit Preservation** | Carrier polling writes the entitlement projection only when the API reports a different active state. Unchanged statuses and API errors leave both the projection and transition audit history untouched. |
