@@ -308,7 +308,16 @@ func (q *Queries) ListExpiredEntitlementsForReconciliation(ctx context.Context, 
 	return items, nil
 }
 
-const upsertEntitlement = `-- name: UpsertEntitlement :exec
+const lockEntitlementUser = `-- name: LockEntitlementUser :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+func (q *Queries) LockEntitlementUser(ctx context.Context, userID string) error {
+	_, err := q.db.ExecContext(ctx, lockEntitlementUser, userID)
+	return err
+}
+
+const upsertEntitlement = `-- name: UpsertEntitlement :execrows
 INSERT INTO user_entitlements (user_id, source, active, expires_at, reason, updated_at, last_event_time)
 VALUES ($1, $2, $3, $4, $5, NOW(), $6)
 ON CONFLICT (user_id, source) DO UPDATE SET
@@ -329,8 +338,8 @@ type UpsertEntitlementParams struct {
 	LastEventTime int64
 }
 
-func (q *Queries) UpsertEntitlement(ctx context.Context, arg UpsertEntitlementParams) error {
-	_, err := q.db.ExecContext(ctx, upsertEntitlement,
+func (q *Queries) UpsertEntitlement(ctx context.Context, arg UpsertEntitlementParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, upsertEntitlement,
 		arg.UserID,
 		arg.Source,
 		arg.Active,
@@ -338,5 +347,8 @@ func (q *Queries) UpsertEntitlement(ctx context.Context, arg UpsertEntitlementPa
 		arg.Reason,
 		arg.LastEventTime,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

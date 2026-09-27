@@ -14,9 +14,11 @@ import (
 type Client struct {
 	db      *sql.DB
 	queries *gen.Queries
+	tx      *sql.Tx
 }
 
 var _ ExpirationReconciler = (*Client)(nil)
+var _ Database = (*Client)(nil)
 
 // Connect opens a database/sql connection using the pgx stdlib driver and
 // returns a Client ready to use. Callers must defer Client.Close().
@@ -77,18 +79,39 @@ func (c *Client) GetEntitlementsByUser(ctx context.Context, userID string) ([]En
 }
 
 func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error) {
+	if c.tx != nil {
+		return c.upsertEntitlement(ctx, c.queries, userID, source, active, expiresAt, reason, lastEventTime, triggeringEventID)
+	}
+
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	q := c.queries.WithTx(tx)
+	stateChanged, err := c.upsertEntitlement(ctx, c.queries.WithTx(tx), userID, source, active, expiresAt, reason, lastEventTime, triggeringEventID)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return stateChanged, nil
+}
 
-	// 1. Fetch current entitlement state
+func (c *Client) upsertEntitlement(ctx context.Context, q *gen.Queries, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error) {
+	// Serialize all mutations for a user before reading the state used for
+	// ordering and audit calculations. The transaction lock also covers the
+	// projection and audit writes below.
+	if err := q.LockEntitlementUser(ctx, userID); err != nil {
+		return false, err
+	}
+
+	// Fetch current entitlement state while the user-level transaction lock is held.
 	var prevActive *bool
 	var prevExpiresAt *time.Time
 	var existingLastEventTime int64
+	var existingEntitlement *Entitlement
 
 	row, err := q.GetEntitlementByUserAndSource(ctx, gen.GetEntitlementByUserAndSourceParams{
 		UserID: userID,
@@ -99,18 +122,21 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 	}
 	if err == nil {
 		ent := entitlementFromGen(row)
+		existingEntitlement = ent
 		prevActive = &ent.Active
 		prevExpiresAt = ent.ExpiresAt
 		existingLastEventTime = ent.LastEventTime
 	}
 
-	// 2. If new event is not newer than existing, skip update
+	// If this event is not newer than the projection, leave it and its audit
+	// history untouched.
 	if err == nil && lastEventTime <= existingLastEventTime {
 		return false, nil
 	}
 
-	// 3. Perform upsert
-	err = q.UpsertEntitlement(ctx, gen.UpsertEntitlementParams{
+	// The upsert reports its affected row count. A skipped conflict update must
+	// not produce an audit record, even if another writer changed the row.
+	affected, err := q.UpsertEntitlement(ctx, gen.UpsertEntitlementParams{
 		UserID:        userID,
 		Source:        source,
 		Active:        active,
@@ -121,8 +147,17 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 	if err != nil {
 		return false, err
 	}
+	if affected == 0 {
+		return false, nil
+	}
 
-	// 4. Insert audit log
+	stateChanged := existingEntitlement == nil || existingEntitlement.Active != active || !sameExpiration(existingEntitlement.ExpiresAt, expiresAt)
+	if !stateChanged {
+		return false, nil
+	}
+
+	// Audit rows represent changes to active status or expiration, not metadata
+	// updates such as a newer event time with the same entitlement state.
 	err = q.InsertAuditLog(ctx, gen.InsertAuditLogParams{
 		UserID:            userID,
 		Source:            source,
@@ -134,10 +169,6 @@ func (c *Client) UpsertEntitlement(ctx context.Context, userID string, source st
 		Reason:            nullString(reason),
 	})
 	if err != nil {
-		return false, err
-	}
-
-	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -284,6 +315,27 @@ func (c *Client) ClaimDueCarrierEntitlements(ctx context.Context, limit int32, d
 // ---------------------------------------------------------------------------
 // StoreEventRepository
 // ---------------------------------------------------------------------------
+
+// WithStoreWebhookTransaction commits the event, entitlement, notification,
+// audit, and processed-event writes together. Any callback or commit error
+// leaves the webhook event eligible for a provider retry.
+func (c *Client) WithStoreWebhookTransaction(ctx context.Context, fn func(StoreWebhookTransaction) error) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	transaction := &Client{
+		db:      c.db,
+		queries: c.queries.WithTx(tx),
+		tx:      tx,
+	}
+	if err := fn(transaction); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 func (c *Client) InsertStoreEvent(ctx context.Context, eventID string, userID string, eventType string, eventTimeMs int64, productID *string) (bool, error) {
 	result, err := c.queries.InsertStoreEvent(ctx, gen.InsertStoreEventParams{
@@ -532,6 +584,15 @@ func nullBool(b *bool) sql.NullBool {
 		return sql.NullBool{}
 	}
 	return sql.NullBool{Bool: *b, Valid: true}
+}
+
+func sameExpiration(left *time.Time, right *time.Time) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	// PostgreSQL timestamps retain microsecond precision, so ignore any
+	// sub-microsecond precision present in an application value.
+	return left.UnixMicro() == right.UnixMicro()
 }
 
 func ptrTime(n sql.NullTime) *time.Time {

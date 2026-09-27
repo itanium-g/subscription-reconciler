@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/example/subscription-reconciler/internal/domain"
@@ -14,21 +15,20 @@ type StoreWebhookService interface {
 }
 
 // NewStoreWebhookService creates a new store webhook service.
-func NewStoreWebhookService(db postgres.Database) StoreWebhookService {
+func NewStoreWebhookService(db postgres.StoreWebhookRepository) StoreWebhookService {
 	return &storeWebhookService{db: db}
 }
 
 type storeWebhookService struct {
-	db postgres.Database
+	db postgres.StoreWebhookRepository
 }
 
 // ProcessStoreWebhook handles incoming store webhook events.
 // It implements idempotency, event ordering, and state reconciliation.
 //
-// Idempotency is enforced at the store_events level: InsertStoreEvent uses
-// ON CONFLICT (event_id) DO NOTHING, so concurrent duplicate deliveries are
-// safe — the second caller sees RowsAffected=0 and returns a duplicate
-// response without touching entitlement state.
+// Event recording, entitlement reconciliation, notification scheduling, and
+// processed marking commit together. If any write fails, the event insert is
+// rolled back so the provider can retry it.
 func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *domain.StoreWebhookPayload) (*domain.StoreWebhookResponse, error) {
 	// Step 1: Validate input
 	if err := payload.Validate(); err != nil {
@@ -40,15 +40,45 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 		}, err
 	}
 
-	// Step 2: Atomically insert event (idempotency gate).
-	// ON CONFLICT (event_id) DO NOTHING ensures concurrent duplicates are safe.
-	inserted, err := s.db.InsertStoreEvent(ctx, payload.EventID, payload.UserID, payload.Type, payload.EventTimeMs, &payload.ProductID)
+	active, expiresAt, reason := s.computeStateTransition(payload.Type, payload.EventTimeMs)
+	inserted := false
+
+	err := s.db.WithStoreWebhookTransaction(ctx, func(tx postgres.StoreWebhookTransaction) error {
+		// ON CONFLICT (event_id) DO NOTHING makes duplicate deliveries safe.
+		var err error
+		inserted, err = tx.InsertStoreEvent(ctx, payload.EventID, payload.UserID, payload.Type, payload.EventTimeMs, &payload.ProductID)
+		if err != nil {
+			return fmt.Errorf("insert store event: %w", err)
+		}
+		if !inserted {
+			return nil
+		}
+
+		// Returns false when a newer event owns the projection or when the
+		// timestamp advanced without changing the entitlement state.
+		stateChanged, err := tx.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs, &payload.EventID)
+		if err != nil {
+			return fmt.Errorf("upsert store entitlement: %w", err)
+		}
+
+		// Schedule only for a real transition to an active, expiring grant.
+		if stateChanged && active && expiresAt != nil {
+			notifyAt := expiresAt.Add(-24 * time.Hour)
+			if err := tx.ScheduleNotification(ctx, payload.UserID, "PREMIUM_EXPIRES_SOON", notifyAt); err != nil {
+				return fmt.Errorf("schedule store expiration notification: %w", err)
+			}
+		}
+
+		if err := tx.MarkEventProcessed(ctx, payload.EventID, "STORE"); err != nil {
+			return fmt.Errorf("mark store event processed: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
 	if !inserted {
-		// Duplicate event — already in store_events.
 		return &domain.StoreWebhookResponse{
 			EventID:     payload.EventID,
 			UserID:      payload.UserID,
@@ -56,29 +86,6 @@ func (s *storeWebhookService) ProcessStoreWebhook(ctx context.Context, payload *
 			IsDuplicate: true,
 			Message:     "Duplicate event, previously processed",
 		}, nil
-	}
-
-	// Step 3: Calculate new entitlement state based on event type
-	active, expiresAt, reason := s.computeStateTransition(payload.Type, payload.EventTimeMs)
-
-	// Step 4: Upsert entitlement state for STORE source.
-	// Returns false if a newer event already owns the projection (late arrival).
-	stateChanged, err := s.db.UpsertEntitlement(ctx, payload.UserID, "STORE", active, expiresAt, &reason, payload.EventTimeMs, &payload.EventID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 5: Schedule expiration notification only when state actually changed
-	// to an active grant with an expiry date. Prevents scheduling spurious
-	// notifications for late-arriving events whose upsert was skipped.
-	if stateChanged && active && expiresAt != nil {
-		notifyAt := expiresAt.Add(-24 * time.Hour)
-		_ = s.db.ScheduleNotification(ctx, payload.UserID, "PREMIUM_EXPIRES_SOON", notifyAt)
-	}
-
-	// Step 6: Mark event as processed (belt-and-suspenders idempotency)
-	if err := s.db.MarkEventProcessed(ctx, payload.EventID, "STORE"); err != nil {
-		return nil, err
 	}
 
 	return &domain.StoreWebhookResponse{
