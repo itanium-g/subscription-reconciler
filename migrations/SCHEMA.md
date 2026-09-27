@@ -86,7 +86,14 @@ Before reading or mutating an entitlement, `UpsertEntitlement` calls `pg_advisor
 **Purpose**: An immutable audit trail of marketplace bulk revocation events.
 
 **Key Design**:
+- `event_id (TEXT UNIQUE)`: Monthly per-user key in the form `marketplace_revoke_<user_id>_<YYYY-MM>`. The unique constraint is the duplicate-delivery gate.
 - Functions similarly to `store_events`, structurally isolating marketplace webhook processing logic.
+
+### Marketplace revocation transaction and concurrency
+
+`RevokeMarketplaceAccess` processes each user in its own PostgreSQL transaction. For one user it inserts the monthly key into `marketplace_revocations`, upserts the `MARKETPLACE` entitlement to inactive with reason `MARKETPLACE_REVOKE`, writes the processed marker with source `MARKETPLACE`, and commits. The entitlement upsert takes `pg_advisory_xact_lock(hashtextextended(user_id, 0))` before reading or changing state, using the same user lock as other entitlement writers.
+
+The event ID is passed to `UpsertEntitlement` and stored in `audit_logs.triggering_event_id`. A transition audit row is written only when the entitlement state changes; a repeated monthly request is rejected by the unique event key and does not add another audit row. The event insert, entitlement update, audit row, and processed marker share one transaction, so any write error or context cancellation rolls all of them back and leaves the monthly key available for retry. Transactions are per user, so already committed users in a bulk request remain complete if a later user's transaction fails.
 
 ---
 
@@ -96,6 +103,7 @@ Before reading or mutating an entitlement, `UpsertEntitlement` calls `pg_advisor
 **Key Design**:
 - **Composite PK**: `(event_id, source)` — Ensures that identical `event_id`s from differing sources do not collide.
 - Store webhook completion markers are written after reconciliation and commit in the same transaction as the event row, entitlement, audit, and optional notification writes. The `store_events.event_id` unique constraint is the duplicate-delivery gate; a failed transaction leaves no marker or event row behind.
+- Marketplace completion markers use source `MARKETPLACE` and commit with the matching `marketplace_revocations` row, entitlement transition, and provenance audit row. A failed transaction leaves neither the marker nor the monthly event key behind.
 
 ---
 
@@ -153,6 +161,7 @@ predicate and scheduled-time ordering, and claimed rows leave that index after
 - Captures `previous_active` / `next_active` and `previous_expires_at` / `next_expires_at`.
 - Written only for an affected entitlement upsert that changes active status or expiration; a stale event or metadata-only update adds no transition row.
 - Interwoven into the same PostgreSQL transaction as `user_entitlements`, store event, notification, and processed-event writes.
+- Marketplace transition rows use reason `MARKETPLACE_REVOKE` and carry the matching `marketplace_revoke_<user_id>_<YYYY-MM>` value in `triggering_event_id`. This provenance identifies the monthly bulk operation that caused the state change; duplicate delivery does not create a second transition row.
 
 ### Expiration reconciliation query
 

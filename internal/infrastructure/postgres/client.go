@@ -19,6 +19,7 @@ type Client struct {
 
 var _ ExpirationReconciler = (*Client)(nil)
 var _ Database = (*Client)(nil)
+var _ MarketplaceRevocationTransaction = (*Client)(nil)
 
 // Connect opens a database/sql connection using the pgx stdlib driver and
 // returns a Client ready to use. Callers must defer Client.Close().
@@ -379,6 +380,34 @@ func (c *Client) GetStoreEventByID(ctx context.Context, eventID string) (*StoreE
 // ---------------------------------------------------------------------------
 // MarketplaceRevocationRepository
 // ---------------------------------------------------------------------------
+
+// WithMarketplaceRevocationTransaction commits each user's revocation event,
+// entitlement and audit updates, and processed marker together. Any callback,
+// cancellation, or commit error rolls the transaction back so a retry can
+// process the monthly event again.
+func (c *Client) WithMarketplaceRevocationTransaction(ctx context.Context, fn func(MarketplaceRevocationTransaction) error) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin marketplace revocation transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	transaction := &Client{
+		db:      c.db,
+		queries: c.queries.WithTx(tx),
+		tx:      tx,
+	}
+	if err := fn(transaction); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("marketplace revocation transaction context: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit marketplace revocation transaction: %w", err)
+	}
+	return nil
+}
 
 func (c *Client) InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) (bool, error) {
 	result, err := c.queries.InsertMarketplaceRevocation(ctx, gen.InsertMarketplaceRevocationParams{

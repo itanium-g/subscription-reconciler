@@ -14,7 +14,7 @@ type MarketplaceRevokeResponse struct {
 
 // ValidateMarketplaceRevokeRequest validates the request.
 func (r *MarketplaceRevokeRequest) Validate() error {
-	if len(r.UserIDs) == 0 {
+	if r == nil || len(r.UserIDs) == 0 {
 		return ErrEmptyUserIDList
 	}
 	if len(r.UserIDs) > 10000 {
