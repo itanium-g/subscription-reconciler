@@ -250,7 +250,31 @@ GET /users/{userId}/entitlement
 Fetch the reconstructed history of entitlement changes for a specific user.
 
 ```http
-GET /users/{userId}/timeline
+GET /users/{userId}/timeline?limit=100&offset=0
+```
+
+`userId` must match `^[a-z_][a-z0-9_]*$`. `limit` defaults to 100 and must be
+between 1 and 1000; `offset` defaults to 0 and must be non-negative. Invalid
+IDs, non-integer pagination values, and out-of-range pagination values return
+HTTP 400 with a structured error code (`MISSING_USER_ID`, `INVALID_USER_ID`,
+or `INVALID_PARAMETERS`).
+
+The response includes one entry for each audited state transition, newest first.
+Each entry records the source, resulting active state and expiry, reason, and
+triggering event ID when the transition came from an event. Marketplace
+revocations use their monthly idempotency key as provenance; expiration worker
+transitions have reason `EXPIRATION` and no triggering event ID. Rows sharing a
+timestamp are consistently ordered by descending audit ID, so pages over the
+same audit history have deterministic boundaries.
+
+```json
+{
+  "userId": "user_store_1",
+  "entries": [],
+  "total": 0,
+  "limit": 100,
+  "offset": 0
+}
 ```
 
 ---
@@ -338,6 +362,9 @@ curl http://localhost:8080/users/user_store_1/timeline
 | **Atomic Store Webhook Processing** | Event ingestion, projection and audit updates, notification scheduling, and processed marking commit together, allowing transient failures to roll back cleanly and succeed on retry. |
 | **Atomic Marketplace Revocation Processing** | Each user's monthly event record, `MARKETPLACE` entitlement update, audit transition, and processed marker commit together. Failures roll back the event key so provider retries can recover. |
 | **Marketplace Revocation Provenance** | The per-user monthly idempotency key is copied to `audit_logs.triggering_event_id` with reason `MARKETPLACE_REVOKE`, linking the state transition to its source event. |
+| **Deterministic Timeline Pagination** | Audit history sorts by `created_at DESC, id DESC`, giving entries with equal transaction timestamps a stable order across limit/offset pages. |
+| **Audit Trail Reconstruction** | Each timeline entry exposes the resulting entitlement state, source, reason, expiry, and triggering event ID recorded with the transition. |
+| **Timeline Request Validation** | User IDs follow `^[a-z_][a-z0-9_]*$`; limits must be 1–1000 and offsets non-negative, with invalid requests reported as structured HTTP 400 errors. |
 | **Per-User Entitlement Locking** | A PostgreSQL transaction advisory lock serializes same-user mutations. The upsert row count and state comparison gate audit writes, preserving a monotonic history without no-op transitions. |
 | **Worker Concurrency** | PostgreSQL's `FOR UPDATE SKIP LOCKED` allows multiple polling, notification, and expiration workers to safely claim independent batches simultaneously without blocking or double-processing rows. |
 | **Atomic Carrier Poll Claims** | A single CTE selects due active carrier entitlements with `FOR UPDATE SKIP LOCKED` and advances `carrier_polled_at` for the whole batch before returning it. The five-minute staleness cutoff avoids re-polling recently claimed users, and workers drain full batches until no backlog remains. |

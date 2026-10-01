@@ -13,34 +13,34 @@ type TimelineService interface {
 }
 
 // NewTimelineService creates a new timeline service.
-func NewTimelineService(db postgres.Database) TimelineService {
+func NewTimelineService(db postgres.AuditLogRepository) TimelineService {
 	return &timelineService{db: db}
 }
 
 type timelineService struct {
-	db postgres.Database
+	db postgres.AuditLogRepository
 }
 
 // GetEntitlementTimeline returns the entitlement change history for a user.
 func (s *timelineService) GetEntitlementTimeline(ctx context.Context, userID string, limit int32, offset int32) (*domain.TimelineResponse, error) {
-	// Validate parameters
-	if limit <= 0 {
-		limit = 100
+	if err := domain.ValidateTimelineUserID(userID); err != nil {
+		return nil, err
 	}
-	if limit > 1000 {
-		limit = 1000
+	if err := domain.ValidateTimelinePagination(limit, offset); err != nil {
+		return nil, err
 	}
-	if offset < 0 {
-		offset = 0
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	// Query audit logs
 	auditLogs, err := s.db.GetAuditLogsByUser(ctx, userID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 
-	// Count total audit logs
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	total, err := s.db.CountAuditLogsByUser(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -49,16 +49,10 @@ func (s *timelineService) GetEntitlementTimeline(ctx context.Context, userID str
 	// Convert audit logs to timeline entries
 	entries := make([]domain.TimelineEntry, len(auditLogs))
 	for i, log := range auditLogs {
-		// Only include entries where the state actually changed
-		active := false
-		if log.NextActive {
-			active = true
-		}
-
 		entries[i] = domain.TimelineEntry{
 			Timestamp:         log.CreatedAt,
 			Source:            log.Source,
-			Active:            active,
+			Active:            log.NextActive,
 			Reason:            log.Reason,
 			ExpiresAt:         log.NextExpiresAt,
 			TriggeringEventID: log.TriggeringEventID,

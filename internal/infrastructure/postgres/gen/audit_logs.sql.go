@@ -27,7 +27,7 @@ const getAuditLogsByUser = `-- name: GetAuditLogsByUser :many
 SELECT id, user_id, source, previous_active, next_active, previous_expires_at, next_expires_at, triggering_event_id, reason, created_at
 FROM audit_logs
 WHERE user_id = $1
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $2 OFFSET $3
 `
 

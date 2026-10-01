@@ -2,11 +2,13 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/example/subscription-reconciler/internal/application"
+	"github.com/example/subscription-reconciler/internal/domain"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -29,39 +31,56 @@ func (h *TimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Reque
 	ctx := r.Context()
 
 	userID := chi.URLParam(r, "userId")
-	if userID == "" {
-		respondError(w, http.StatusBadRequest, "MISSING_USER_ID", "User ID is required")
+	if err := domain.ValidateTimelineUserID(userID); err != nil {
+		var domainErr domain.DomainError
+		if errors.As(err, &domainErr) {
+			respondError(w, http.StatusBadRequest, domainErr.Code, domainErr.Message)
+			return
+		}
+		respondError(w, http.StatusBadRequest, "INVALID_USER_ID", "userId is invalid")
 		return
 	}
 
 	// Parse query parameters
 	limit := int32(100)
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if parsed, err := strconv.ParseInt(l, 10, 32); err == nil {
-			limit = int32(parsed)
+	query := r.URL.Query()
+	if query.Has("limit") {
+		parsed, err := strconv.ParseInt(query.Get("limit"), 10, 32)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "limit must be an integer")
+			return
 		}
+		limit = int32(parsed)
 	}
 
 	offset := int32(0)
-	if o := r.URL.Query().Get("offset"); o != "" {
-		if parsed, err := strconv.ParseInt(o, 10, 32); err == nil {
-			offset = int32(parsed)
+	if query.Has("offset") {
+		parsed, err := strconv.ParseInt(query.Get("offset"), 10, 32)
+		if err != nil {
+			respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "offset must be an integer")
+			return
 		}
+		offset = int32(parsed)
 	}
 
-	// Validate parameters
-	if limit < 1 || limit > 1000 {
-		respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "limit must be between 1 and 1000")
-		return
-	}
-	if offset < 0 {
-		respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "offset must be >= 0")
+	if err := domain.ValidateTimelinePagination(limit, offset); err != nil {
+		var domainErr domain.DomainError
+		if errors.As(err, &domainErr) {
+			respondError(w, http.StatusBadRequest, domainErr.Code, domainErr.Message)
+		} else {
+			respondError(w, http.StatusBadRequest, "INVALID_PARAMETERS", "invalid pagination parameters")
+		}
 		return
 	}
 
 	// Query timeline
 	timeline, err := h.service.GetEntitlementTimeline(ctx, userID, limit, offset)
 	if err != nil {
+		var domainErr domain.DomainError
+		if errors.As(err, &domainErr) {
+			respondError(w, http.StatusBadRequest, domainErr.Code, domainErr.Message)
+			return
+		}
 		h.logger.ErrorContext(ctx, "failed to query timeline", "user_id", userID, "err", err)
 		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to query timeline")
 		return

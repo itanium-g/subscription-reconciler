@@ -162,6 +162,23 @@ predicate and scheduled-time ordering, and claimed rows leave that index after
 - Written only for an affected entitlement upsert that changes active status or expiration; a stale event or metadata-only update adds no transition row.
 - Interwoven into the same PostgreSQL transaction as `user_entitlements`, store event, notification, and processed-event writes.
 - Marketplace transition rows use reason `MARKETPLACE_REVOKE` and carry the matching `marketplace_revoke_<user_id>_<YYYY-MM>` value in `triggering_event_id`. This provenance identifies the monthly bulk operation that caused the state change; duplicate delivery does not create a second transition row.
+- Store transitions retain the originating store event ID. Expiration reconciliation records reason `EXPIRATION`; it has no triggering event ID because the transition is caused by the scheduled worker rather than a new external event.
+
+#### Timeline pagination contract
+
+`GetAuditLogsByUser` orders rows with `created_at DESC, id DESC` before applying
+`LIMIT` and `OFFSET`. `created_at` is the primary newest-first order; the
+immutable primary key `id` breaks ties when multiple audit entries share the
+same transaction timestamp. This gives a deterministic, non-overlapping page
+sequence over a fixed audit history, including when entries were written in
+one transaction.
+
+The timeline endpoint reconstructs each transition from `source`,
+`next_active`, `next_expires_at`, `reason`, and `triggering_event_id`, with
+`previous_active` and `previous_expires_at` retained for auditing. User IDs
+must match `^[a-z_][a-z0-9_]*$`; page limits are 1–1000 and offsets are
+non-negative. Invalid IDs or pagination values are rejected before querying
+the audit repository.
 
 ### Expiration reconciliation query
 
