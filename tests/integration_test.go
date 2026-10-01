@@ -3,9 +3,11 @@ package tests
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"os"
 	"sort"
 	"sync"
@@ -14,8 +16,10 @@ import (
 
 	"github.com/example/subscription-reconciler/internal/application"
 	"github.com/example/subscription-reconciler/internal/domain"
+	httpinfra "github.com/example/subscription-reconciler/internal/infrastructure/http"
 	"github.com/example/subscription-reconciler/internal/infrastructure/postgres"
 	workerinfra "github.com/example/subscription-reconciler/internal/infrastructure/worker"
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -514,6 +518,220 @@ func TestExpirationWorkerReconciliation(t *testing.T) {
 	require.NotNil(t, expirationLog.PreviousActive)
 	require.True(t, *expirationLog.PreviousActive)
 	require.False(t, expirationLog.NextActive)
+}
+
+func TestTimelineAuditTrailMultiSourceProgression(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	userID := "timeline_multi_source_user"
+
+	// Start with a previously granted marketplace entitlement, then exercise the
+	// store, expiration worker, and marketplace ingress paths in sequence.
+	dbConn, err := sql.Open("pgx", pgContainer.dsn)
+	require.NoError(t, err)
+	defer dbConn.Close()
+	_, err = dbConn.ExecContext(ctx, `
+		INSERT INTO user_entitlements (user_id, source, active, last_event_time)
+		VALUES ($1, 'MARKETPLACE', TRUE, 1)
+	`, userID)
+	require.NoError(t, err)
+
+	storeService := application.NewStoreWebhookService(testDB)
+	initialEventID := "timeline_initial_purchase"
+	initialEventTime := time.Now().Add(-2 * time.Second)
+	_, err = storeService.ProcessStoreWebhook(ctx, &domain.StoreWebhookPayload{
+		EventID:     initialEventID,
+		UserID:      userID,
+		Type:        string(domain.EventTypeInitialPurchase),
+		EventTimeMs: initialEventTime.UnixMilli(),
+		ProductID:   "premium_1_month",
+	})
+	require.NoError(t, err)
+
+	renewalEventID := "timeline_renewal"
+	renewalEventTime := initialEventTime.Add(time.Second)
+	_, err = storeService.ProcessStoreWebhook(ctx, &domain.StoreWebhookPayload{
+		EventID:     renewalEventID,
+		UserID:      userID,
+		Type:        string(domain.EventTypeRenewal),
+		EventTimeMs: renewalEventTime.UnixMilli(),
+		ProductID:   "premium_1_month",
+	})
+	require.NoError(t, err)
+
+	// Move the renewal's expiry into the past to make the scheduled expiration
+	// reconciliation eligible without waiting for a real subscription month.
+	_, err = dbConn.ExecContext(ctx, `
+		UPDATE user_entitlements
+		SET expires_at = NOW() - INTERVAL '1 second'
+		WHERE user_id = $1 AND source = 'STORE'
+	`, userID)
+	require.NoError(t, err)
+
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	defer cancelWorker()
+	worker := workerinfra.NewExpirationWorker(testDB, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	workerDone := make(chan struct{})
+	go func() {
+		worker.StartExpirationReconciliation(workerCtx)
+		close(workerDone)
+	}()
+	require.Eventually(t, func() bool {
+		entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "STORE")
+		return err == nil && entitlement != nil && !entitlement.Active
+	}, 5*time.Second, 10*time.Millisecond)
+	cancelWorker()
+	select {
+	case <-workerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("expiration worker did not stop after context cancellation")
+	}
+
+	_, err = application.NewMarketplaceRevokeService(testDB).RevokeMarketplaceAccess(ctx, &domain.MarketplaceRevokeRequest{
+		UserIDs: []string{userID},
+	})
+	require.NoError(t, err)
+	var marketplaceEventID string
+	err = dbConn.QueryRowContext(ctx, "SELECT event_id FROM marketplace_revocations WHERE user_id = $1", userID).Scan(&marketplaceEventID)
+	require.NoError(t, err)
+	require.Regexp(t, fmt.Sprintf("^marketplace_revoke_%s_[0-9]{4}-[0-9]{2}$", userID), marketplaceEventID)
+
+	timeline, err := application.NewTimelineService(testDB).GetEntitlementTimeline(ctx, userID, 100, 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), timeline.Total)
+	require.Len(t, timeline.Entries, 4)
+
+	wantReasons := []string{"MARKETPLACE_REVOKE", "EXPIRATION", "RENEWAL", "INITIAL_PURCHASE"}
+	wantSources := []string{"MARKETPLACE", "STORE", "STORE", "STORE"}
+	wantActive := []bool{false, false, true, true}
+	wantEventIDs := []*string{&marketplaceEventID, nil, &renewalEventID, &initialEventID}
+	for i, entry := range timeline.Entries {
+		require.Equal(t, wantSources[i], entry.Source)
+		require.Equal(t, wantActive[i], entry.Active)
+		require.NotNil(t, entry.Reason)
+		require.Equal(t, wantReasons[i], *entry.Reason)
+		require.Equal(t, wantEventIDs[i], entry.TriggeringEventID)
+		if i > 0 {
+			require.False(t, entry.Timestamp.After(timeline.Entries[i-1].Timestamp), "timeline must be newest first")
+		}
+	}
+	require.Nil(t, timeline.Entries[0].ExpiresAt)
+	require.Nil(t, timeline.Entries[1].ExpiresAt)
+	require.NotNil(t, timeline.Entries[2].ExpiresAt)
+	require.NotNil(t, timeline.Entries[3].ExpiresAt)
+
+	auditLogs, err := testDB.GetAuditLogsByUser(ctx, userID, 100, 0)
+	require.NoError(t, err)
+	require.Len(t, auditLogs, 4)
+	require.NotNil(t, auditLogs[0].PreviousActive)
+	require.True(t, *auditLogs[0].PreviousActive)
+	require.False(t, auditLogs[0].NextActive)
+	require.NotNil(t, auditLogs[1].PreviousActive)
+	require.True(t, *auditLogs[1].PreviousActive)
+	require.False(t, auditLogs[1].NextActive)
+	require.NotNil(t, auditLogs[2].PreviousActive)
+	require.True(t, *auditLogs[2].PreviousActive)
+	require.True(t, auditLogs[2].NextActive)
+	require.NotNil(t, auditLogs[2].PreviousExpiresAt)
+	require.NotNil(t, auditLogs[2].NextExpiresAt)
+	require.NotEqual(t, *auditLogs[2].PreviousExpiresAt, *auditLogs[2].NextExpiresAt)
+	require.Nil(t, auditLogs[3].PreviousActive)
+	require.True(t, auditLogs[3].NextActive)
+}
+
+func TestTimelineDeterministicPaginationAndTieBreaking(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	userID := "timeline_tied_timestamps_user"
+	timestamp := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	dbConn, err := sql.Open("pgx", pgContainer.dsn)
+	require.NoError(t, err)
+	defer dbConn.Close()
+	_, err = dbConn.ExecContext(ctx, `
+		INSERT INTO audit_logs (
+			user_id, source, next_active, triggering_event_id, reason, created_at
+		)
+		SELECT $1, 'STORE', TRUE, 'tie_event_' || entry_number::text, 'TIE', $2
+		FROM generate_series(1, 7) AS entries(entry_number)
+		ORDER BY entry_number
+	`, userID, timestamp)
+	require.NoError(t, err)
+
+	service := application.NewTimelineService(testDB)
+	var eventIDs []string
+	for offset := int32(0); offset < 7; offset += 3 {
+		timeline, err := service.GetEntitlementTimeline(ctx, userID, 3, offset)
+		require.NoError(t, err)
+		require.Equal(t, int64(7), timeline.Total)
+		for _, entry := range timeline.Entries {
+			require.True(t, timestamp.Equal(entry.Timestamp))
+			require.NotNil(t, entry.TriggeringEventID)
+			eventIDs = append(eventIDs, *entry.TriggeringEventID)
+		}
+	}
+
+	require.Equal(t, []string{
+		"tie_event_7", "tie_event_6", "tie_event_5", "tie_event_4", "tie_event_3", "tie_event_2", "tie_event_1",
+	}, eventIDs)
+}
+
+func TestTimelineParameterValidation(t *testing.T) {
+	cleanDB(t)
+	handler := httpinfra.NewTimelineHandler(
+		application.NewTimelineService(testDB),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	router := chi.NewRouter()
+	router.Get("/users/{userId}/timeline", handler.HandleGetTimeline)
+
+	testCases := []struct {
+		path string
+		code string
+	}{
+		{path: "/users/Invalid_User/timeline", code: "INVALID_USER_ID"},
+		{path: "/users/user_timeline_params/timeline?limit=abc", code: "INVALID_PARAMETERS"},
+		{path: "/users/user_timeline_params/timeline?offset=xyz", code: "INVALID_PARAMETERS"},
+		{path: "/users/user_timeline_params/timeline?limit=0", code: "INVALID_PARAMETERS"},
+		{path: "/users/user_timeline_params/timeline?limit=-1", code: "INVALID_PARAMETERS"},
+		{path: "/users/user_timeline_params/timeline?offset=-1", code: "INVALID_PARAMETERS"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.path, func(t *testing.T) {
+			request := httptest.NewRequest("GET", testCase.path, nil)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			require.Equal(t, 400, response.Code)
+			var body struct {
+				Code string `json:"code"`
+			}
+			require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
+			require.Equal(t, testCase.code, body.Code)
+		})
+	}
+
+	missingUserRequest := httptest.NewRequest("GET", "/users//timeline", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("userId", "")
+	missingUserRequest = missingUserRequest.WithContext(context.WithValue(missingUserRequest.Context(), chi.RouteCtxKey, routeContext))
+	missingUserResponse := httptest.NewRecorder()
+	handler.HandleGetTimeline(missingUserResponse, missingUserRequest)
+	require.Equal(t, 400, missingUserResponse.Code)
+	var missingUserBody struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.NewDecoder(missingUserResponse.Body).Decode(&missingUserBody))
+	require.Equal(t, "MISSING_USER_ID", missingUserBody.Code)
+
+	emptyHistoryRequest := httptest.NewRequest("GET", "/users/user_timeline_empty/timeline", nil)
+	emptyHistoryResponse := httptest.NewRecorder()
+	router.ServeHTTP(emptyHistoryResponse, emptyHistoryRequest)
+	require.Equal(t, 200, emptyHistoryResponse.Code)
+	var body struct {
+		Entries json.RawMessage `json:"entries"`
+	}
+	require.NoError(t, json.NewDecoder(emptyHistoryResponse.Body).Decode(&body))
+	require.Equal(t, "[]", string(body.Entries))
 }
 
 // TestConcurrentExpirationWorkers verifies that concurrent workers claim each
