@@ -110,9 +110,17 @@ type StoreWebhookRepository interface {
 	WithStoreWebhookTransaction(ctx context.Context, fn func(StoreWebhookTransaction) error) error
 }
 
+// MarketplaceRevocationTransaction exposes writes that belong to one
+// marketplace revocation transaction.
+type MarketplaceRevocationTransaction interface {
+	InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) (bool, error)
+	UpsertEntitlement(ctx context.Context, userID string, source string, active bool, expiresAt *time.Time, reason *string, lastEventTime int64, triggeringEventID *string) (bool, error)
+	MarkEventProcessed(ctx context.Context, eventID string, source string) error
+}
+
 // MarketplaceRevocationRepository handles marketplace revocation persistence.
 type MarketplaceRevocationRepository interface {
-	InsertMarketplaceRevocation(ctx context.Context, eventID string, userID string) (bool, error)
+	WithMarketplaceRevocationTransaction(ctx context.Context, fn func(MarketplaceRevocationTransaction) error) error
 	GetMarketplaceRevocationByEventID(ctx context.Context, eventID string) (*MarketplaceRevocation, error)
 }
 

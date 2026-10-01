@@ -625,6 +625,128 @@ func TestMarketplaceIsolation(t *testing.T) {
 	require.False(t, marketplaceEnt.Active)
 }
 
+func TestMarketplaceRevokeAtomicityAndRetry(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	userID := "marketplace_atomic_retry_user"
+	seedEventTime := time.Now().Add(-time.Minute).UnixMilli()
+	_, err := testDB.UpsertEntitlement(ctx, userID, "MARKETPLACE", true, nil, nil, seedEventTime, nil)
+	require.NoError(t, err)
+	auditCountBefore, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+
+	dbConn, err := sql.Open("pgx", pgContainer.dsn)
+	require.NoError(t, err)
+	defer dbConn.Close()
+
+	const constraintName = "test_reject_marketplace_processed"
+	_, err = dbConn.ExecContext(ctx, "ALTER TABLE processed_events ADD CONSTRAINT "+constraintName+" CHECK (source <> 'MARKETPLACE')")
+	require.NoError(t, err)
+	defer func() {
+		_, _ = dbConn.ExecContext(context.Background(), "ALTER TABLE processed_events DROP CONSTRAINT IF EXISTS "+constraintName)
+	}()
+
+	service := application.NewMarketplaceRevokeService(testDB)
+	request := &domain.MarketplaceRevokeRequest{UserIDs: []string{userID}}
+	response, err := service.RevokeMarketplaceAccess(ctx, request)
+	require.Error(t, err)
+	require.Nil(t, response)
+	require.Contains(t, err.Error(), userID)
+
+	var eventCount, processedCount int
+	eventID := fmt.Sprintf("marketplace_revoke_%s_%s", userID, time.Now().Format("2006-01"))
+	require.NoError(t, dbConn.QueryRowContext(ctx, "SELECT COUNT(*) FROM marketplace_revocations WHERE event_id = $1", eventID).Scan(&eventCount))
+	require.NoError(t, dbConn.QueryRowContext(ctx, "SELECT COUNT(*) FROM processed_events WHERE event_id = $1 AND source = 'MARKETPLACE'", eventID).Scan(&processedCount))
+	require.Zero(t, eventCount)
+	require.Zero(t, processedCount)
+	entitlement, err := testDB.GetEntitlementByUserAndSource(ctx, userID, "MARKETPLACE")
+	require.NoError(t, err)
+	require.NotNil(t, entitlement)
+	require.True(t, entitlement.Active)
+	auditCountAfterFailure, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, auditCountBefore, auditCountAfterFailure)
+
+	_, err = dbConn.ExecContext(ctx, "ALTER TABLE processed_events DROP CONSTRAINT "+constraintName)
+	require.NoError(t, err)
+
+	response, err = service.RevokeMarketplaceAccess(ctx, request)
+	require.NoError(t, err)
+	require.True(t, response.Accepted)
+	require.Equal(t, int32(1), response.Count)
+	require.NoError(t, dbConn.QueryRowContext(ctx, "SELECT COUNT(*) FROM marketplace_revocations WHERE event_id = $1", eventID).Scan(&eventCount))
+	require.NoError(t, dbConn.QueryRowContext(ctx, "SELECT COUNT(*) FROM processed_events WHERE event_id = $1 AND source = 'MARKETPLACE'", eventID).Scan(&processedCount))
+	require.Equal(t, 1, eventCount)
+	require.Equal(t, 1, processedCount)
+	entitlement, err = testDB.GetEntitlementByUserAndSource(ctx, userID, "MARKETPLACE")
+	require.NoError(t, err)
+	require.NotNil(t, entitlement)
+	require.False(t, entitlement.Active)
+	auditCountAfterRetry, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, auditCountBefore+1, auditCountAfterRetry)
+}
+
+func TestMarketplaceRevokeIdempotency(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	userID := "marketplace_idempotent_user"
+	_, err := testDB.UpsertEntitlement(ctx, userID, "MARKETPLACE", true, nil, nil, time.Now().Add(-time.Minute).UnixMilli(), nil)
+	require.NoError(t, err)
+
+	service := application.NewMarketplaceRevokeService(testDB)
+	request := &domain.MarketplaceRevokeRequest{UserIDs: []string{userID}}
+	firstResponse, err := service.RevokeMarketplaceAccess(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), firstResponse.Count)
+	auditCountAfterFirst, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+
+	secondResponse, err := service.RevokeMarketplaceAccess(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, int32(0), secondResponse.Count)
+	auditCountAfterSecond, err := testDB.CountAuditLogsByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, auditCountAfterFirst, auditCountAfterSecond)
+
+	eventID := fmt.Sprintf("marketplace_revoke_%s_%s", userID, time.Now().Format("2006-01"))
+	_, err = testDB.GetMarketplaceRevocationByEventID(ctx, eventID)
+	require.NoError(t, err)
+	processed, err := testDB.IsEventProcessed(ctx, eventID, "MARKETPLACE")
+	require.NoError(t, err)
+	require.True(t, processed)
+}
+
+func TestMarketplaceRevokeAuditProvenance(t *testing.T) {
+	cleanDB(t)
+	ctx := context.Background()
+	userID := "marketplace_audit_provenance_user"
+	_, err := testDB.UpsertEntitlement(ctx, userID, "MARKETPLACE", true, nil, nil, time.Now().Add(-time.Minute).UnixMilli(), nil)
+	require.NoError(t, err)
+
+	revokedAt := time.Now()
+	eventID := fmt.Sprintf("marketplace_revoke_%s_%s", userID, revokedAt.Format("2006-01"))
+	response, err := application.NewMarketplaceRevokeService(testDB).RevokeMarketplaceAccess(ctx, &domain.MarketplaceRevokeRequest{UserIDs: []string{userID}})
+	require.NoError(t, err)
+	require.Equal(t, int32(1), response.Count)
+
+	auditLogs, err := testDB.GetAuditLogsByUser(ctx, userID, 100, 0)
+	require.NoError(t, err)
+	var revokeAudit *postgres.AuditLog
+	for i := range auditLogs {
+		if auditLogs[i].Reason != nil && *auditLogs[i].Reason == "MARKETPLACE_REVOKE" {
+			revokeAudit = &auditLogs[i]
+			break
+		}
+	}
+	require.NotNil(t, revokeAudit)
+	require.Equal(t, "MARKETPLACE", revokeAudit.Source)
+	require.NotNil(t, revokeAudit.TriggeringEventID)
+	require.Equal(t, eventID, *revokeAudit.TriggeringEventID)
+	require.NotNil(t, revokeAudit.Reason)
+	require.Equal(t, "MARKETPLACE_REVOKE", *revokeAudit.Reason)
+}
+
 type mockCarrierClient struct {
 	mu        sync.Mutex
 	statusMap map[string]domain.CarrierPlanStatus
